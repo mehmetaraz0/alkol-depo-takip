@@ -44,7 +44,8 @@
   .group-header { background: #e8e8ee; padding: 6px 10px; font-size: 12px; font-weight: 700;
     color: #444; border-radius: 6px; margin: 10px 0 4px; }
   .prod-row { background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px;
-    display: flex; justify-content: space-between; align-items: center; }
+    display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+  .prod-row:active { background: #eef2fb; }
   .prod-row .info { flex: 1; min-width: 0; }
   .prod-row .pname { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
@@ -119,6 +120,7 @@
   <h1>Alkol Depo Takip</h1>
   <div class="sub" id="header-sub">3 depo &middot; Alibey Club</div>
 </header>
+<div id="offlineBar" style="display:none; background:#c62828; color:#fff; font-size:12px; text-align:center; padding:6px; position:sticky; top:56px; z-index:19;"></div>
 
 <div class="container" id="app"></div>
 
@@ -158,6 +160,7 @@ let stock = { ana: {}, yan1: {}, yan2: {} };
 let transactions = [];
 let currentTab = 'depolar';
 let openDepotDetail = null; // depot id when viewing detail
+let depotSearchQuery = '';
 
 const app = document.getElementById('app');
 
@@ -216,9 +219,28 @@ function renderDepotDetail() {
 
   let html = `<button onclick="backToList()" style="background:none;border:none;color:#1f3864;font-size:14px;padding:6px 0;margin-bottom:6px;">&larr; Depolar</button>`;
   html += `<div class="section-title">${depots[id]} &middot; Stok Durumu</div>`;
+  html += `<input class="search-box" id="depotSearchBox" placeholder="Ürün ara (stokta olmasa da)..." value="${depotSearchQuery}" oninput="depotSearchQuery=this.value; renderDepotDetail(); setTimeout(()=>{const b=document.getElementById('depotSearchBox'); if(b){b.focus(); b.setSelectionRange(b.value.length,b.value.length);}},0);">`;
+
+  if (depotSearchQuery.trim().length >= 2) {
+    const q = depotSearchQuery.trim().toLowerCase();
+    const matches = PRODUCTS.filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q)).slice(0, 40);
+    if (matches.length === 0) {
+      html += `<div class="empty-state">Sonuç bulunamadı.</div>`;
+    } else {
+      matches.forEach(p => {
+        const qty = (items[p[0]] || 0);
+        html += `<div class="prod-row" onclick="quickTap('${id}','${p[0]}')">
+          <div class="info"><div class="pname">${p[1]}</div><div class="pcode">${p[0]}</div></div>
+          <div class="pqty">${fmtNum(qty)}<div class="unit">${p[2]}</div></div>
+        </div>`;
+      });
+    }
+    app.innerHTML = html;
+    return;
+  }
 
   if (codes.length === 0) {
-    html += `<div class="empty-state">Bu depoda henüz stok kaydı yok.<br>Sağ alttaki + butonuyla giriş ekleyebilirsin.</div>`;
+    html += `<div class="empty-state">Bu depoda henüz stok kaydı yok.<br>Yukarıdan ürün arayıp ekleyebilir ya da sağ alttaki + butonunu kullanabilirsin.</div>`;
   } else {
     Object.keys(grouped).sort().forEach(grup => {
       html += `<div class="group-header">${grup}</div>`;
@@ -229,7 +251,7 @@ function renderDepotDetail() {
         const p = prodMap[k];
         const name = p ? p[1] : k;
         const unit = p ? p[2] : '';
-        html += `<div class="prod-row">
+        html += `<div class="prod-row" onclick="quickTap('${id}','${k}')">
           <div class="info"><div class="pname">${name}</div><div class="pcode">${k}</div></div>
           <div class="pqty">${fmtNum(items[k])}<div class="unit">${unit}</div></div>
         </div>`;
@@ -241,6 +263,7 @@ function renderDepotDetail() {
 
 function backToList() {
   openDepotDetail = null;
+  depotSearchQuery = '';
   renderDepotList();
 }
 
@@ -264,10 +287,11 @@ function renderHistory() {
         badge = `<span class="tx-badge tx-transfer">TRANSFER</span>`;
         desc = `${depots[tx.fromDepot] || tx.fromDepot} &rarr; ${depots[tx.toDepot] || tx.toDepot}`;
       }
+      const pending = tx.localId && getQueue().some(q => q.localId === tx.localId);
       html += `<div class="tx-row">
         <div class="tx-top">${badge}<span style="font-size:13px;font-weight:700;">${fmtNum(tx.miktar)} ${tx.birim||''}</span></div>
         <div class="tx-name">${tx.ad}</div>
-        <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+tx.note : ''}</div>
+        <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+tx.note : ''}${pending ? ' &middot; <span style=\'color:#c62828;font-weight:600;\'>gönderiliyor...</span>' : ''}</div>
       </div>`;
     });
   }
@@ -294,30 +318,124 @@ document.querySelectorAll('nav.bottom button').forEach(btn => {
   });
 });
 
-// Firebase listeners
+// ===== Yerel önbellek (internet olmadan da açılabilsin) =====
+function loadCache() {
+  try {
+    const d = localStorage.getItem('cache_depots');
+    const s = localStorage.getItem('cache_stock');
+    const t = localStorage.getItem('cache_tx');
+    if (d) depots = {...DEFAULT_DEPOTS, ...JSON.parse(d)};
+    if (s) stock = JSON.parse(s);
+    if (t) transactions = JSON.parse(t);
+  } catch(e) {}
+}
+function saveCache() {
+  try {
+    localStorage.setItem('cache_depots', JSON.stringify(depots));
+    localStorage.setItem('cache_stock', JSON.stringify(stock));
+    localStorage.setItem('cache_tx', JSON.stringify(transactions.slice(0,300)));
+  } catch(e) {}
+}
+loadCache();
+render();
+
+// ===== Bekleyen işlem kuyruğu (internet yokken kaydedilenler) =====
+function getQueue() {
+  try { return JSON.parse(localStorage.getItem('pending_queue') || '[]'); } catch(e) { return []; }
+}
+function setQueue(q) { localStorage.setItem('pending_queue', JSON.stringify(q)); }
+
+function updateOfflineBar() {
+  const bar = document.getElementById('offlineBar');
+  const q = getQueue();
+  const isOnline = navigator.onLine;
+  if (!isOnline) {
+    bar.style.display = 'block';
+    bar.textContent = q.length > 0
+      ? `İnternet yok — ${q.length} işlem bekliyor, bağlantı gelince otomatik gönderilecek`
+      : 'İnternet yok — işlemler cihazda kaydediliyor';
+  } else if (q.length > 0) {
+    bar.style.display = 'block';
+    bar.style.background = '#1565c0';
+    bar.textContent = `${q.length} işlem senkronize ediliyor...`;
+  } else {
+    bar.style.display = 'none';
+    bar.style.background = '#c62828';
+  }
+}
+
+function applyDeltaLocal(depotId, kod, delta) {
+  if (!stock[depotId]) stock[depotId] = {};
+  stock[depotId][kod] = round2((stock[depotId][kod] || 0) + delta);
+}
+
+function trySyncQueue() {
+  if (!navigator.onLine) { updateOfflineBar(); return; }
+  const q = getQueue();
+  if (q.length === 0) { updateOfflineBar(); return; }
+  updateOfflineBar();
+
+  const next = q[0];
+  const applyOne = (depotId, kod, delta) =>
+    db.ref(`stock/${depotId}/${kod}`).transaction(cur => round2((cur || 0) + delta));
+
+  const finishItem = () => {
+    const remaining = getQueue().slice(1);
+    setQueue(remaining);
+    updateOfflineBar();
+    if (remaining.length > 0) setTimeout(trySyncQueue, 200);
+  };
+
+  const pushTxRecord = () => {
+    const rec = {...next};
+    delete rec.localId;
+    db.ref('transactions').push(rec).then(finishItem).catch(() => setTimeout(trySyncQueue, 5000));
+  };
+
+  if (next.type === 'transfer') {
+    Promise.all([
+      applyOne(next.fromDepot, next.kod, -next.miktar),
+      applyOne(next.toDepot, next.kod, next.miktar)
+    ]).then(pushTxRecord).catch(() => setTimeout(trySyncQueue, 5000));
+  } else {
+    const delta = next.type === 'giris' ? next.miktar : -next.miktar;
+    applyOne(next.depotId, next.kod, delta).then(pushTxRecord).catch(() => setTimeout(trySyncQueue, 5000));
+  }
+}
+
+window.addEventListener('online', trySyncQueue);
+window.addEventListener('offline', updateOfflineBar);
+setInterval(trySyncQueue, 15000);
+updateOfflineBar();
+
+// Firebase listeners (bağlantı varsa canlı veriyle günceller)
 db.ref('depots').on('value', snap => {
   const val = snap.val();
   if (val) depots = {...DEFAULT_DEPOTS, ...val};
+  saveCache();
   render();
 });
 
 db.ref('stock').on('value', snap => {
   const val = snap.val() || {};
   stock = { ana: val.ana||{}, yan1: val.yan1||{}, yan2: val.yan2||{} };
+  saveCache();
   render();
 });
 
 db.ref('transactions').limitToLast(300).on('value', snap => {
   const val = snap.val() || {};
   transactions = Object.keys(val).map(k => ({ id: k, ...val[k] }));
+  saveCache();
   render();
 });
 
 // ===== Modal: yeni işlem =====
 let txType = 'giris';
 let selectedProduct = null;
+let quickDepotContext = null; // ürün satırından tıklanınca hangi depo bağlamında açıldığı
 
-document.getElementById('fabBtn').addEventListener('click', openModal);
+document.getElementById('fabBtn').addEventListener('click', () => { quickDepotContext = null; openModal(); });
 
 function openModal() {
   txType = 'giris';
@@ -358,9 +476,66 @@ function openModal() {
   renderDepotFields();
 }
 
+function quickTap(depotId, kod) {
+  const p = PRODUCTS.find(x => x[0] === kod);
+  if (!p) return;
+  txType = 'giris';
+  selectedProduct = p;
+  quickDepotContext = depotId;
+  const currentQty = (stock[depotId] && stock[depotId][kod]) || 0;
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.id = 'modalOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h2>${p[1]}</h2>
+      <div style="font-size:12px;color:#999;margin:-8px 0 14px;">${p[0]} &middot; ${depots[depotId]} içinde şu an: <b>${fmtNum(currentQty)} ${p[2]}</b></div>
+      <div class="type-tabs">
+        <button id="typeGiris" class="sel-giris" onclick="setType('giris')">Giriş</button>
+        <button id="typeCikis" onclick="setType('cikis')">Çıkış</button>
+        <button id="typeTransfer" onclick="setType('transfer')">Transfer</button>
+      </div>
+
+      <div id="depotFields"></div>
+
+      <label>Miktar</label>
+      <input type="number" id="miktarInput" placeholder="Örn: 12" min="0" step="0.01">
+
+      <label>Not (opsiyonel)</label>
+      <input type="text" id="noteInput" placeholder="Örn: tedarikçi adı, sebep...">
+
+      <div class="err" id="modalErr"></div>
+
+      <button class="save-btn" onclick="saveTransaction()">Kaydet</button>
+      <button class="cancel-btn" onclick="closeModal()">Vazgeç</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  renderDepotFields();
+  applyQuickDepotPreset(depotId);
+  setTimeout(() => { const m = document.getElementById('miktarInput'); if (m) m.focus(); }, 60);
+}
+
+function applyQuickDepotPreset(depotId) {
+  if (txType === 'transfer') {
+    const from = document.getElementById('fromDepot');
+    const to = document.getElementById('toDepot');
+    if (from) from.value = depotId;
+    if (to) {
+      const other = Object.keys(depots).find(x => x !== depotId) || depotId;
+      to.value = depotId === 'ana' ? other : 'ana';
+    }
+  } else {
+    const single = document.getElementById('singleDepot');
+    if (single) single.value = depotId;
+  }
+}
+
 function closeModal() {
   const o = document.getElementById('modalOverlay');
   if (o) o.remove();
+  quickDepotContext = null;
 }
 
 function setType(t) {
@@ -370,6 +545,7 @@ function setType(t) {
   document.getElementById('typeCikis').className = t==='cikis' ? 'sel-cikis' : '';
   document.getElementById('typeTransfer').className = t==='transfer' ? 'sel-transfer' : '';
   renderDepotFields();
+  if (quickDepotContext) applyQuickDepotPreset(quickDepotContext);
 }
 
 function renderDepotFields() {
@@ -445,7 +621,9 @@ function saveTransaction() {
   const note = document.getElementById('noteInput').value.trim();
   const [kod, ad, birim] = selectedProduct;
   const now = Date.now();
+  const localId = 'local_' + now + '_' + Math.random().toString(36).slice(2,8);
 
+  let txRecord;
   if (txType === 'transfer') {
     const from = document.getElementById('fromDepot').value;
     const to = document.getElementById('toDepot').value;
@@ -454,20 +632,29 @@ function saveTransaction() {
       errBox.style.display = 'block';
       return;
     }
-    const fromCurrent = (stock[from] && stock[from][kod]) || 0;
-    const toCurrent = (stock[to] && stock[to][kod]) || 0;
-    db.ref(`stock/${from}/${kod}`).set(round2(fromCurrent - miktar));
-    db.ref(`stock/${to}/${kod}`).set(round2(toCurrent + miktar));
-    db.ref('transactions').push({ type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now });
+    txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId };
+    applyDeltaLocal(from, kod, -miktar);
+    applyDeltaLocal(to, kod, miktar);
   } else {
     const depotId = document.getElementById('singleDepot').value;
-    const current = (stock[depotId] && stock[depotId][kod]) || 0;
-    const newVal = txType === 'giris' ? current + miktar : current - miktar;
-    db.ref(`stock/${depotId}/${kod}`).set(round2(newVal));
-    db.ref('transactions').push({ type: txType, depotId, kod, ad, birim, miktar, note, ts: now });
+    txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId };
+    const delta = txType === 'giris' ? miktar : -miktar;
+    applyDeltaLocal(depotId, kod, delta);
   }
 
+  // Anında ekranda göster (internet olmasa bile)
+  transactions.unshift(txRecord);
+  saveCache();
+
+  // Kuyruğa ekle ve senkronizasyonu dene
+  const q = getQueue();
+  q.push(txRecord);
+  setQueue(q);
+  updateOfflineBar();
+  trySyncQueue();
+
   closeModal();
+  render();
 }
 
 function round2(n) { return Math.round(n * 100) / 100; }
