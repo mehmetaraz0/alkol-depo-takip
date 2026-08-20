@@ -112,6 +112,25 @@
   .tx-name { font-size: 14px; font-weight: 500; margin-top: 4px; }
   .tx-meta { font-size: 11px; color: #999; margin-top: 2px; }
   .empty-state { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; }
+
+  /* Rapor */
+  .report-actions { display: flex; gap: 8px; margin-bottom: 10px; }
+  .report-actions button { flex: 1; padding: 10px; border-radius: 10px; border: 1px solid #ddd;
+    background: #fff; font-size: 13px; font-weight: 600; color: #1f3864; }
+  .report-table-wrap { overflow-x: auto; background: #fff; border-radius: 10px; }
+  table.report-table { border-collapse: collapse; width: 100%; font-size: 12px; white-space: nowrap; }
+  table.report-table th, table.report-table td { padding: 7px 8px; border-bottom: 1px solid #eee; text-align: right; }
+  table.report-table th:first-child, table.report-table td:first-child { text-align: left; position: sticky; left: 0; background: #fff; }
+  table.report-table thead th { background: #1f3864; color: #fff; position: sticky; top: 0; }
+  table.report-table tr.grp td { background: #e8e8ee; font-weight: 700; text-align: left; color: #444; }
+  table.report-table td.tot { font-weight: 700; color: #1f3864; }
+
+  @media print {
+    header, nav.bottom, .fab, .report-actions, .search-box { display: none !important; }
+    body { padding: 0; background: #fff; }
+    table.report-table th:first-child, table.report-table td:first-child { position: static; }
+    table.report-table thead th { position: static; }
+  }
 </style>
 </head>
 <body>
@@ -128,6 +147,7 @@
 
 <nav class="bottom">
   <button data-tab="depolar" class="active"><span class="icon">&#9673;</span>Depolar</button>
+  <button data-tab="rapor"><span class="icon">&#9636;</span>Rapor</button>
   <button data-tab="gecmis"><span class="icon">&#8635;</span>Geçmiş</button>
 </nav>
 
@@ -267,6 +287,119 @@ function backToList() {
   renderDepotList();
 }
 
+let reportSearchQuery = '';
+
+function renderReport() {
+  const prodMap = {};
+  PRODUCTS.forEach(p => prodMap[p[0]] = p);
+  const depotIds = Object.keys(depots);
+
+  // hangi ürün kodları herhangi bir depoda stoklu
+  const allCodes = new Set();
+  depotIds.forEach(id => Object.keys(stock[id] || {}).forEach(k => {
+    if ((stock[id][k] || 0) !== 0) allCodes.add(k);
+  }));
+
+  let codes = [...allCodes];
+  const q = reportSearchQuery.trim().toLowerCase();
+  if (q) {
+    codes = codes.filter(k => {
+      const p = prodMap[k];
+      return (p ? p[1].toLowerCase() : k.toLowerCase()).includes(q) || k.toLowerCase().includes(q);
+    });
+  }
+
+  const grouped = {};
+  codes.forEach(k => {
+    const p = prodMap[k];
+    const grup = p ? p[3] : 'DİĞER';
+    if (!grouped[grup]) grouped[grup] = [];
+    grouped[grup].push(k);
+  });
+
+  let html = `<div class="section-title">Stok Raporu &middot; Tüm Depolar</div>`;
+  html += `<div class="report-actions">
+    <button onclick="window.print()">Yazdır</button>
+    <button onclick="exportReportCsv()">Excel'e Aktar</button>
+  </div>`;
+  html += `<input class="search-box" placeholder="Ürün ara..." value="${reportSearchQuery}" oninput="reportSearchQuery=this.value; renderReport();">`;
+
+  if (codes.length === 0) {
+    html += `<div class="empty-state">Gösterilecek stok kaydı yok.</div>`;
+  } else {
+    html += `<div class="report-table-wrap"><table class="report-table"><thead><tr>
+      <th>Ürün</th>${depotIds.map(id => `<th>${depots[id]}</th>`).join('')}<th>Toplam</th>
+    </tr></thead><tbody>`;
+    Object.keys(grouped).sort().forEach(grup => {
+      html += `<tr class="grp"><td colspan="${depotIds.length + 2}">${grup}</td></tr>`;
+      grouped[grup].sort((a,b) => {
+        const pa = prodMap[a], pb = prodMap[b];
+        return (pa?pa[1]:a).localeCompare(pb?pb[1]:b);
+      }).forEach(k => {
+        const p = prodMap[k];
+        const name = p ? p[1] : k;
+        const unit = p ? p[2] : '';
+        let total = 0;
+        const cells = depotIds.map(id => {
+          const v = (stock[id] && stock[id][k]) || 0;
+          total += v;
+          return `<td>${v ? fmtNum(v) : '-'}</td>`;
+        }).join('');
+        html += `<tr><td>${name} <span style="color:#999;font-weight:400;">(${unit})</span></td>${cells}<td class="tot">${fmtNum(total)}</td></tr>`;
+      });
+    });
+    html += `</tbody></table></div>`;
+  }
+  app.innerHTML = html;
+}
+
+function exportReportCsv() {
+  const prodMap = {};
+  PRODUCTS.forEach(p => prodMap[p[0]] = p);
+  const depotIds = Object.keys(depots);
+
+  const allCodes = new Set();
+  depotIds.forEach(id => Object.keys(stock[id] || {}).forEach(k => {
+    if ((stock[id][k] || 0) !== 0) allCodes.add(k);
+  }));
+  const codes = [...allCodes].sort((a,b) => {
+    const pa = prodMap[a], pb = prodMap[b];
+    return (pa?pa[1]:a).localeCompare(pb?pb[1]:b);
+  });
+
+  const headers = ['Kod','Ürün Adı','Birim','Grup', ...depotIds.map(id => depots[id]), 'Toplam'];
+  const rows = [headers];
+  codes.forEach(k => {
+    const p = prodMap[k];
+    const name = p ? p[1] : k;
+    const unit = p ? p[2] : '';
+    const grup = p ? p[3] : '';
+    let total = 0;
+    const vals = depotIds.map(id => {
+      const v = (stock[id] && stock[id][k]) || 0;
+      total += v;
+      return fmtNum(v);
+    });
+    rows.push([k, name, unit, grup, ...vals, fmtNum(total)]);
+  });
+
+  const csv = rows.map(r => r.map(cell => {
+    const s = String(cell).replace(/"/g, '""');
+    return /[",;\n]/.test(s) ? `"${s}"` : s;
+  }).join(';')).join('\r\n');
+
+  const dateStr = new Date().toISOString().slice(0,10);
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Stok_Raporu_${dateStr}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function renderHistory() {
   let html = `<div class="section-title">İşlem Geçmişi</div>`;
   if (transactions.length === 0) {
@@ -302,6 +435,8 @@ function render() {
   if (currentTab === 'depolar') {
     if (openDepotDetail) renderDepotDetail();
     else renderDepotList();
+  } else if (currentTab === 'rapor') {
+    renderReport();
   } else if (currentTab === 'gecmis') {
     renderHistory();
   }
