@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Alkol Depo Takip</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #f2f2f5; color: #1a1a1a; padding-bottom: 76px;
+  }
+  header {
+    background: #1f3864; color: #fff; padding: 16px 16px 14px;
+    position: sticky; top: 0; z-index: 20;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header .sub { font-size: 12px; opacity: .75; margin-top: 2px; }
+
+  .container { padding: 12px; }
+
+  /* Depot cards */
+  .depot-grid { display: flex; flex-direction: column; gap: 10px; }
+  .depot-card {
+    background: #fff; border-radius: 12px; padding: 14px 16px;
+    display: flex; justify-content: space-between; align-items: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08); cursor: pointer;
+  }
+  .depot-card .name { font-size: 16px; font-weight: 600; }
+  .depot-card .name input {
+    font-size: 16px; font-weight: 600; border: none; background: transparent;
+    border-bottom: 1px dashed #bbb; width: 140px; padding: 0;
+  }
+  .depot-card .stats { text-align: right; }
+  .depot-card .stats .num { font-size: 20px; font-weight: 700; color: #1f3864; }
+  .depot-card .stats .lbl { font-size: 11px; color: #888; }
+
+  .section-title { font-size: 13px; font-weight: 700; color: #666; text-transform: uppercase;
+    letter-spacing: .04em; margin: 18px 4px 8px; }
+
+  /* Stock list */
+  .search-box { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd;
+    font-size: 15px; margin-bottom: 10px; background: #fff; }
+  .group-header { background: #e8e8ee; padding: 6px 10px; font-size: 12px; font-weight: 700;
+    color: #444; border-radius: 6px; margin: 10px 0 4px; }
+  .prod-row { background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px;
+    display: flex; justify-content: space-between; align-items: center; }
+  .prod-row .info { flex: 1; min-width: 0; }
+  .prod-row .pname { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .prod-row .pcode { font-size: 11px; color: #999; }
+  .prod-row .pqty { font-size: 16px; font-weight: 700; color: #1f3864; min-width: 60px; text-align: right; }
+  .prod-row .pqty .unit { font-size: 11px; font-weight: 400; color: #999; }
+
+  /* Bottom nav */
+  nav.bottom {
+    position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
+    border-top: 1px solid #e0e0e0; display: flex; z-index: 30;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  nav.bottom button {
+    flex: 1; background: none; border: none; padding: 10px 0 8px; font-size: 11px;
+    color: #999; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  }
+  nav.bottom button.active { color: #1f3864; font-weight: 700; }
+  nav.bottom .icon { font-size: 20px; }
+
+  /* FAB */
+  .fab {
+    position: fixed; bottom: 76px; right: 16px; width: 56px; height: 56px; border-radius: 50%;
+    background: #C00000; color: #fff; border: none; font-size: 28px; box-shadow: 0 3px 10px rgba(0,0,0,.3);
+    z-index: 25; line-height: 1;
+  }
+
+  /* Modal */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 50; display: flex;
+    align-items: flex-end; justify-content: center; }
+  .modal { background: #fff; width: 100%; max-width: 480px; border-radius: 16px 16px 0 0;
+    padding: 18px 16px; max-height: 88vh; overflow-y: auto; }
+  .modal h2 { margin: 0 0 14px; font-size: 17px; }
+  .modal label { display: block; font-size: 12px; color: #777; margin: 12px 0 5px; font-weight: 600; }
+  .modal select, .modal input[type=text], .modal input[type=number] {
+    width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid #ddd; font-size: 15px;
+    background: #fafafa;
+  }
+  .type-tabs { display: flex; gap: 8px; }
+  .type-tabs button { flex: 1; padding: 12px 0; border-radius: 10px; border: 2px solid #ddd;
+    background: #fff; font-size: 14px; font-weight: 600; color: #666; }
+  .type-tabs button.sel-giris { border-color: #2e7d32; background: #e8f5e9; color: #2e7d32; }
+  .type-tabs button.sel-cikis { border-color: #c62828; background: #fdecea; color: #c62828; }
+  .type-tabs button.sel-transfer { border-color: #1565c0; background: #e3f2fd; color: #1565c0; }
+
+  .autocomplete-list { border: 1px solid #ddd; border-top: none; border-radius: 0 0 10px 10px;
+    max-height: 220px; overflow-y: auto; background: #fff; }
+  .autocomplete-list div { padding: 10px 12px; font-size: 14px; border-top: 1px solid #f0f0f0; }
+  .autocomplete-list div .ac-code { font-size: 11px; color: #999; }
+
+  .save-btn { width: 100%; padding: 14px; border-radius: 10px; border: none; background: #1f3864;
+    color: #fff; font-size: 16px; font-weight: 700; margin-top: 18px; }
+  .cancel-btn { width: 100%; padding: 12px; border-radius: 10px; border: none; background: none;
+    color: #999; font-size: 14px; margin-top: 8px; }
+  .err { color: #c62828; font-size: 12px; margin-top: 6px; display: none; }
+
+  /* History */
+  .tx-row { background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+  .tx-row .tx-top { display: flex; justify-content: space-between; align-items: center; }
+  .tx-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+  .tx-giris { background: #e8f5e9; color: #2e7d32; }
+  .tx-cikis { background: #fdecea; color: #c62828; }
+  .tx-transfer { background: #e3f2fd; color: #1565c0; }
+  .tx-name { font-size: 14px; font-weight: 500; margin-top: 4px; }
+  .tx-meta { font-size: 11px; color: #999; margin-top: 2px; }
+  .empty-state { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Alkol Depo Takip</h1>
+  <div class="sub" id="header-sub">3 depo &middot; Alibey Club</div>
+</header>
+
+<div class="container" id="app"></div>
+
+<button class="fab" id="fabBtn">+</button>
+
+<nav class="bottom">
+  <button data-tab="depolar" class="active"><span class="icon">&#9673;</span>Depolar</button>
+  <button data-tab="gecmis"><span class="icon">&#8635;</span>Geçmiş</button>
+</nav>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyA3T0cLeSZK70In_RWcqkq3QEk8nzvBAJA",
+  authDomain: "alkol-depo-takip.firebaseapp.com",
+  databaseURL: "https://alkol-depo-takip-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "alkol-depo-takip",
+  storageBucket: "alkol-depo-takip.firebasestorage.app",
+  messagingSenderId: "861371573670",
+  appId: "1:861371573670:web:d383c354807a76fc839b67"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// [kod, ad, birim, grup]
+const PRODUCTS = [["ICB01000010", "BIRA MALT 25 CL 24 LU", "kol", "BIRALAR"], ["ICB01000011", "BIRA SISE 30 CL 24 LU", "kol", "BIRALAR"], ["ICB01000013", "BIRA TUBORG GOLD 30LU", "kol", "BIRALAR"], ["ICB01000005", "BIRA FICI 50 LT", "fic", "BIRALAR"], ["ICB01000014", "BIRA FICI BECKS 30 LT", "fic", "BIRALAR"], ["ICB01000015", "BIRA FICI BUD 30 LT", "fic", "BIRALAR"], ["ICB01000016", "BIRA FICI BELFAST 30 LT", "fic", "BIRALAR"], ["ICB01000017", "BIRA FICI AROIS 30 LT", "fic", "BIRALAR"], ["ICB02000001", "ANGORA 37,5 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000003", "MINIBAR KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000005", "SOFRA SARABI KIRMIZI 75 C", "bot", "SOFRA SARAPLARI"], ["ICB02000017", "ANGORA KIRMIZI 75 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000056", "MYRINA KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000069", "SUVLA KABATEPE KIRMIZI SA", "bot", "SOFRA SARAPLARI"], ["ICB02000080", "IDOL KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000083", "PUNTA KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000004", "MINIBAR BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000007", "SOFRA SARABI BEYAZ 75 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000057", "MYRINA BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000071", "SUVLA KABATEPE BEYAZ SARA", "bot", "SOFRA SARAPLARI"], ["ICB02000079", "IDOL BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000082", "PUNTA BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000006", "SOFRA SARABI ROSE 75 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000058", "MYRINA ROZE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000070", "SUVLA KABATEPE ROSE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000081", "IDOL ROSE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000084", "PUNTA ROSE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000060", "SAMPANYA PIERRE DE PAUL R", "bot", "SOFRA SARAPLARI"], ["ICB02000063", "CHANDON GARDEN SPRITZ", "bot", "SOFRA SARAPLARI"], ["ICB02000072", "SAMPANYA LA PASSION BEYAZ", "bot", "SOFRA SARAPLARI"], ["ICB02000078", "SAMPANYA SERENA FRIZZANTE", "bot", "SOFRA SARAPLARI"], ["ICB03000012", "RAKI YENI 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000015", "RAKI TEKIRDAG 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000019", "RAKI YAS UZUM EFE 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000020", "RAKI YAS UZUM 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000035", "RAKI EFE GOLD 70 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000054", "RAKI BEYLERBEYI GOBEK 100", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000059", "RAKI BEYLERBEYI TERA GOLD", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000067", "RAKI EFE GOLD 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000068", "RAKI SARI ZEYBEK ORJINAL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000069", "RAKI SARI ZEYBEK 3 MESE 1", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000070", "RAKI SARI ZEYBEK YAS UZUM", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000072", "RAKI SARI ZEYBEK YAS UZUM", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000022", "KANYAK 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000001", "LIKOR ACI PORTAKAL 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000002", "LIKOR MUZ 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000003", "LIKOR NANE 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000004", "LIKOR KAYISI 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000005", "LIKOR CILEK 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000008", "LIKOR ACIBADEM 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000009", "LIKOR PORTAKAL 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000010", "LIKOR SEFTALI 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000011", "LIKOR VISNE 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000024", "LIKOR KAVUN 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB04000008", "BIRA BOMONTI 50 CL 20 LI", "kol", "IMPORT BIRALAR"], ["ICB04000001", "BIRA BECK S 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000002", "BIRA MILLER 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000004", "BIRA HEINEKEN SISE 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000006", "BIRA CARLSBERG 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000010", "BIRA BUD 33 CL (24 LU)", "kol", "IMPORT BIRALAR"], ["ICB04000011", "BIRA GLUTENSIZ 33 CL 24", "kol", "IMPORT BIRALAR"], ["ICB04000018", "BIRA PAULENER 33 CL 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000020", "BIRA HEINEKEN KUTU 25 CL", "kol", "IMPORT BIRALAR"], ["ICB04000024", "BIRA STELLA ARTOIS 20'LI", "kol", "IMPORT BIRALAR"], ["ICB05000008", "SARAFIN MERLOT 2006 75 CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000011", "MEMORO ROSSO", "bot", "PREMIUM SARAPLAR"], ["ICB05000015", "FRONTERA CABERNET SAUVIGN", "bot", "PREMIUM SARAPLAR"], ["ICB05000094", "BAD BOY MERLOT/ CABERNET", "bot", "PREMIUM SARAPLAR"], ["ICB05000136", "'M' MINUTY RUBY ROSE", "bot", "PREMIUM SARAPLAR"], ["ICB05000148", "MURIEL RIOJA CRIANZA FINC", "bot", "PREMIUM SARAPLAR"], ["ICB05000183", "ALNE PROSECCO TREVISO", "bot", "PREMIUM SARAPLAR"], ["ICB05000248", "SARAFIN FUME BLANC 75 CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000327", "CLOUDY BAY PINOT NOIR", "bot", "PREMIUM SARAPLAR"], ["ICB05000328", "BARONE MONTALTO CAB.SAV", "bot", "PREMIUM SARAPLAR"], ["ICB05000335", "MEANDROS MERLOT SHIRAZ", "bot", "PREMIUM SARAPLAR"], ["ICB05000336", "CONSENSUS SHIRAZ CABARNET", "bot", "PREMIUM SARAPLAR"], ["ICB05000338", "MON REVE OKUZGOZU", "bot", "PREMIUM SARAPLAR"], ["ICB05000341", "MON REVE TEMPRANILLO", "bot", "PREMIUM SARAPLAR"], ["ICB05000342", "ANTRE CABARNET S. MERLOT", "bot", "PREMIUM SARAPLAR"], ["ICB05000343", "ANTRE OKUZGOZU BOGAZKERE", "bot", "PREMIUM SARAPLAR"], ["ICB05000344", "ANTRE KALECIK KARASI SANG", "bot", "PREMIUM SARAPLAR"], ["ICB05000345", "SMYRNA CABARNET S.", "bot", "PREMIUM SARAPLAR"], ["ICB05000346", "SMYRNA SHIRAZ PETIT VERDO", "bot", "PREMIUM SARAPLAR"], ["ICB05000347", "SMYRNA MERLOT", "bot", "PREMIUM SARAPLAR"], ["ICB05000349", "SYMRNA GRENACHE SHIRAZ", "bot", "PREMIUM SARAPLAR"], ["ICB05000024", "DANZANTE PINOT GRIGIO 75", "bot", "PREMIUM SARAPLAR"], ["ICB05000103", "EGEO FUME BLANC", "bot", "PREMIUM SARAPLAR"], ["ICB05000115", "EGEO SAUVIGNON BLANC BEYA", "bot", "PREMIUM SARAPLAR"], ["ICB05000150", "CHATEAU DE SEGUIN SAUVIGN", "bot", "PREMIUM SARAPLAR"], ["ICB05000178", "COTES D'AVANOS SAUVIGNON", "bot", "PREMIUM SARAPLAR"], ["ICB05000209", "CLOUDY BAY SAUVIGNON BLAN", "bot", "PREMIUM SARAPLAR"], ["ICB05000258", "CLARENDELLE BY HAUT BRION", "bot", "PREMIUM SARAPLAR"], ["ICB05000326", "PRINZ V HESSEN RIESLING", "bot", "PREMIUM SARAPLAR"], ["ICB05000330", "LA PASSITO MISKET", "bot", "PREMIUM SARAPLAR"], ["ICB05000331", "CHABLIS DROUHIN VAUDON", "bot", "PREMIUM SARAPLAR"], ["ICB05000337", "CONSENSUS CHARDONAY", "bot", "PREMIUM SARAPLAR"], ["ICB05000339", "MON REVE CHARDONAY CHENIN", "bot", "PREMIUM SARAPLAR"], ["ICB05000340", "MON REVE S.BLANC PINOT GR", "bot", "PREMIUM SARAPLAR"], ["ICB05000348", "SMYRNA S.BLANC TREBBIANO", "bot", "PREMIUM SARAPLAR"], ["ICB05000350", "MON REVE VIOGNIER BEYAZ", "bot", "PREMIUM SARAPLAR"], ["ICB05000014", "WHISPERING ANGEL ROSE 75", "bot", "PREMIUM SARAPLAR"], ["ICB05000146", "EGEO ROSE SARAP 70 CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000195", "UP-ULTIMATE PROVENCE AOP", "bot", "PREMIUM SARAPLAR"], ["ICB05000293", "CIELO PIN GIRG BLUSH 75CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000329", "MIRABEAU X ROSE", "bot", "PREMIUM SARAPLAR"], ["ICB06000070", "PICCINI FAMIGLIA ROSE", "bot", "IMPORT SAMPANYALAR"], ["ICB06000051", "BOTTEGA ROSE GOLD SPUMANT", "bot", "IMPORT SAMPANYALAR"], ["ICB06000061", "PICCINI PROSECCO DOC EXTR", "bot", "IMPORT SAMPANYALAR"], ["ICB06000001", "MUMM CORDON ROUGE BRUT", "bot", "IMPORT SAMPANYALAR"], ["ICB06000002", "DOM PERIGNON VINTAGE BRUT", "bot", "IMPORT SAMPANYALAR"], ["ICB06000015", "MOET&CHANDON BRUT IMPERIA", "bot", "IMPORT SAMPANYALAR"], ["ICB06000024", "MOET&CHANDON ICE BRUT IMP", "bot", "IMPORT SAMPANYALAR"], ["ICB06000071", "ITINERA PROSECCO", "bot", "IMPORT SAMPANYALAR"], ["ICB07000116", "CIN GILBEYS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000115", "VOTKA GILBEYS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000003", "BLUECURACO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000004", "AMARETTO DISARONNO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000005", "SAFARI 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000007", "COINTREAU 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000008", "JAGERMEISTER LIKOR 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000010", "LIKOR KAHLUA 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000011", "BAILEYS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000012", "BAILEYS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000013", "ARCHERS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000014", "CAMPARI 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000015", "BATIDA COCO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000016", "CAMPARI 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000080", "LIKOR SAMBUCA BUSSONI 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000104", "LIKOR RAMAZZOTTI AMARO 10", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000114", "AMARETTO DISARONNO 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000131", "LIKOR KEGLEVICH MELONE 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000133", "LIKOR KEGLEVICH CILEK 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000141", "LIKOR TRIPLE SEC 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000178", "LIKOR SHERIDAN'S 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000180", "RAMAZOTTI APERITIVO ROSAT", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000206", "LIKOR BACERS FIELD 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000225", "LIKOR CHAMBORD 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000226", "LIKOR 43 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000236", "LIKOR TRIPLE SEC 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000279", "LIKOR LILLET BLANC 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000280", "LIKOR LILLET ROSE 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000326", "LIKOR GRAND MARNIER 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000327", "LIKOR RAMAZOTTI CREMA 70C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000328", "JAGERMEISTER COLD BREW 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000331", "SAFARI 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000344", "DIPLOMATICA REZERVA EX.RH", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000345", "LIKOR KLEOS MASTIC 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000018", "MARTINI BIANCO 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000019", "GARRONE BIANCO 100 CL MA", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000021", "MARTINI EXTRA DRY 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000022", "GARRONE EXTRA DRY 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000023", "MARTINI ROSSO 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000099", "MARTINI BIANCO 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000111", "LIMONCELLO 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000150", "LIMONCELLO LIKOR 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000211", "LIMONCE 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000354", "MARTINI BITTER 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000144", "TEQUILA EL JIMADOR 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000174", "TEQUILA OLMECA GOLD 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000176", "TEQUILA EL JIMADOR REPOSA", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000215", "TEQUILA JOSE CUERVO SILVE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000231", "TEQUILA PATRON SILVER 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000232", "TEQUILA PATRON ANEJO 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000301", "TEQUILA SIP&SIP", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000314", "TEQUILA OLMECA SILVER 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000315", "TEQUILA JOSE CUERVO SILVE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000325", "DANGEROUS DON MEZCAL CAFE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000334", "TEQUILA PATRON EL CIELO 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000358", "TEQUILA EL JIMADOR 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000001", "CANARIO CACHACA 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000031", "MALIBU 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000032", "BACARDI CARDA BLANCA 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000033", "HAVANA CLUB BLANCO RHUM 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000034", "CAPTAIN MORGEN BLACK 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000112", "CAPTAIN MORGEN GOLD 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000149", "CAPTAIN MORGEN WHITE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000038", "JIM BEAM 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000039", "JAMESON 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000040", "JB RARE SCOTCH 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000041", "BALLANTINES FINES 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000042", "J.WALKER RED LABEL 100 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000121", "WHISKY FAMOUS GROUSE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000145", "WHISKY FAMOUS GROUSE 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000159", "WHISKY VAT 69 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000162", "DIMPLE GOLDEN SELECTION 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000278", "JAMESON BLACK BARREL 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000292", "WHISKY MAKER'S MARK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000294", "THE GENTLEMAN JACK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000296", "WHIS.PIKE CREK CANADIAN10", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000302", "THE GENTLEMAN JACK 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000346", "JIM BEAM 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000044", "JACK DANIELS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000045", "J.WALKER BLACK LABEL 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000046", "CHIVAS REGAL 12 YILLIK 10", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000081", "CHIVAS ROYAL SALUTE 21Y 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000098", "J.WALKER BLACK LABEL 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000103", "THE GLENLIVET FOUNDER'S R", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000157", "WHISKY JACK DANIELS HONEY", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000200", "WHISKY LAGAVULIN 16 YO 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000202", "J.WALKER BLUE LABEL 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000216", "WHISKY MACALLAN 12 YRS 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000218", "WHISKY MONKEY SHOULDER 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000229", "CAOL LLA SINGLE MALT12YO", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000242", "JACK DANIELS 35 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000244", "WHISKY HIBIKI HARMONY 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000289", "WHISKY JACK DANIELS HONEY", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000318", "CHIWAS SMOOTH&SMOKY 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000319", "GLENMORANGIES TRIPLE CASK", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000342", "JACK DANILS BONDED RYE 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000356", "CHIWAS SMOOTH&SMOKY 100 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000049", "CIN BOMBAY SAPPHIRE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000051", "CIN GORDONS DRY 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000122", "CIN HENDRICKS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000140", "CIN BEEFEATER PINK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000163", "CIN GORDON'S PINK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000164", "CIN TANQUERAY LONDON DRY", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000223", "CIN MONKEY 47 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000237", "CIN BEEFEATER 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000281", "CIN MALFY LIMONE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000282", "CIN MALFY ORIGINALE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000295", "CIN GIBSON'S KAN PORTAKAL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000306", "CIN GORDONS DRY 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000323", "CIN KNUT HANSEN 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000324", "CIN LONDON NO:1 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000332", "CIN BOMBAY SAPPHIRE 100 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000343", "CIN FORD'S 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000357", "CIN SEVENTY ONE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000058", "VOTKA SMIRNOFF 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000124", "VOTKA GREY GOOSE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000125", "VOTKA ABSOLUT 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000153", "VOTKA BELVEDERE PURE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000187", "VOTKA ABSOLUT RASPBERRY 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000188", "VOTKA ABSOLUT VANILLA ARO", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000189", "VOTKA ABSOLUT CITRON AROM", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000190", "VOTKA ABSOLUT LIME AROMA", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000219", "VOTKA BELUGA NOBLE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000221", "VOTKA KETEL ONE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000303", "VOTKA STOLICHNAYA TUZ KAR", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000320", "VOTKA RUSSIAN STANDART 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000321", "VOTKA STOLICHNAYA 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000322", "VOTKA ZUBROWKA 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000333", "VOTKA ZUBROWKA 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000064", "APEROL 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000065", "FERNET BRANCA 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000091", "GRAPPA CLASSICIA 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000109", "ABSINTHE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000347", "ABSINTHE 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000066", "KANYAK MARTEL VS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000067", "KANYAK HENNESY VS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000138", "KANYAK ST. REMY VSOP 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000177", "KANYAK METAXA 7 (70 CL)", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000070", "KANYAK MARTEL VSOP 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000092", "KANYAK MARTEL XO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"]];
+
+const DEFAULT_DEPOTS = {
+  ana: "Ana Depo",
+  yan1: "Yan Depo 1",
+  yan2: "Yan Depo 2"
+};
+
+let depots = {...DEFAULT_DEPOTS};
+let stock = { ana: {}, yan1: {}, yan2: {} };
+let transactions = [];
+let currentTab = 'depolar';
+let openDepotDetail = null; // depot id when viewing detail
+
+const app = document.getElementById('app');
+
+function fmtNum(n) {
+  n = Number(n) || 0;
+  return n % 1 === 0 ? n.toString() : n.toFixed(2);
+}
+
+function renderDepotList() {
+  let html = '<div class="depot-grid">';
+  for (const id of Object.keys(depots)) {
+    const items = stock[id] || {};
+    const codes = Object.keys(items).filter(k => items[k] > 0);
+    const totalUnits = codes.reduce((s,k) => s + (items[k]||0), 0);
+    html += `<div class="depot-card" onclick="openDepot('${id}')">
+      <div class="name" onclick="event.stopPropagation()">
+        <input value="${depots[id]}" onchange="renameDepot('${id}', this.value)">
+      </div>
+      <div class="stats">
+        <div class="num">${codes.length}</div>
+        <div class="lbl">${codes.length===1?'ürün çeşidi':'ürün çeşidi'} · ${fmtNum(totalUnits)} adet</div>
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+  app.innerHTML = html;
+}
+
+function openDepot(id) {
+  openDepotDetail = id;
+  renderDepotDetail();
+}
+
+function renameDepot(id, val) {
+  val = val.trim() || DEFAULT_DEPOTS[id];
+  depots[id] = val;
+  db.ref('depots/' + id).set(val);
+}
+
+function renderDepotDetail() {
+  const id = openDepotDetail;
+  const items = stock[id] || {};
+  const codes = Object.keys(items).filter(k => items[k] !== 0);
+
+  // group by grup from PRODUCTS
+  const prodMap = {};
+  PRODUCTS.forEach(p => prodMap[p[0]] = p);
+
+  const grouped = {};
+  codes.forEach(k => {
+    const p = prodMap[k];
+    const grup = p ? p[3] : 'DİĞER';
+    if (!grouped[grup]) grouped[grup] = [];
+    grouped[grup].push(k);
+  });
+
+  let html = `<button onclick="backToList()" style="background:none;border:none;color:#1f3864;font-size:14px;padding:6px 0;margin-bottom:6px;">&larr; Depolar</button>`;
+  html += `<div class="section-title">${depots[id]} &middot; Stok Durumu</div>`;
+
+  if (codes.length === 0) {
+    html += `<div class="empty-state">Bu depoda henüz stok kaydı yok.<br>Sağ alttaki + butonuyla giriş ekleyebilirsin.</div>`;
+  } else {
+    Object.keys(grouped).sort().forEach(grup => {
+      html += `<div class="group-header">${grup}</div>`;
+      grouped[grup].sort((a,b) => {
+        const pa = prodMap[a], pb = prodMap[b];
+        return (pa?pa[1]:a).localeCompare(pb?pb[1]:b);
+      }).forEach(k => {
+        const p = prodMap[k];
+        const name = p ? p[1] : k;
+        const unit = p ? p[2] : '';
+        html += `<div class="prod-row">
+          <div class="info"><div class="pname">${name}</div><div class="pcode">${k}</div></div>
+          <div class="pqty">${fmtNum(items[k])}<div class="unit">${unit}</div></div>
+        </div>`;
+      });
+    });
+  }
+  app.innerHTML = html;
+}
+
+function backToList() {
+  openDepotDetail = null;
+  renderDepotList();
+}
+
+function renderHistory() {
+  let html = `<div class="section-title">İşlem Geçmişi</div>`;
+  if (transactions.length === 0) {
+    html += `<div class="empty-state">Henüz işlem kaydı yok.</div>`;
+  } else {
+    const sorted = [...transactions].sort((a,b) => b.ts - a.ts);
+    sorted.slice(0, 100).forEach(tx => {
+      const d = new Date(tx.ts);
+      const dateStr = d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'});
+      let badge, desc;
+      if (tx.type === 'giris') {
+        badge = `<span class="tx-badge tx-giris">GİRİŞ</span>`;
+        desc = `${depots[tx.depotId] || tx.depotId}`;
+      } else if (tx.type === 'cikis') {
+        badge = `<span class="tx-badge tx-cikis">ÇIKIŞ</span>`;
+        desc = `${depots[tx.depotId] || tx.depotId}`;
+      } else {
+        badge = `<span class="tx-badge tx-transfer">TRANSFER</span>`;
+        desc = `${depots[tx.fromDepot] || tx.fromDepot} &rarr; ${depots[tx.toDepot] || tx.toDepot}`;
+      }
+      html += `<div class="tx-row">
+        <div class="tx-top">${badge}<span style="font-size:13px;font-weight:700;">${fmtNum(tx.miktar)} ${tx.birim||''}</span></div>
+        <div class="tx-name">${tx.ad}</div>
+        <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+tx.note : ''}</div>
+      </div>`;
+    });
+  }
+  app.innerHTML = html;
+}
+
+function render() {
+  if (currentTab === 'depolar') {
+    if (openDepotDetail) renderDepotDetail();
+    else renderDepotList();
+  } else if (currentTab === 'gecmis') {
+    renderHistory();
+  }
+}
+
+// Nav
+document.querySelectorAll('nav.bottom button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav.bottom button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentTab = btn.dataset.tab;
+    openDepotDetail = null;
+    render();
+  });
+});
+
+// Firebase listeners
+db.ref('depots').on('value', snap => {
+  const val = snap.val();
+  if (val) depots = {...DEFAULT_DEPOTS, ...val};
+  render();
+});
+
+db.ref('stock').on('value', snap => {
+  const val = snap.val() || {};
+  stock = { ana: val.ana||{}, yan1: val.yan1||{}, yan2: val.yan2||{} };
+  render();
+});
+
+db.ref('transactions').limitToLast(300).on('value', snap => {
+  const val = snap.val() || {};
+  transactions = Object.keys(val).map(k => ({ id: k, ...val[k] }));
+  render();
+});
+
+// ===== Modal: yeni işlem =====
+let txType = 'giris';
+let selectedProduct = null;
+
+document.getElementById('fabBtn').addEventListener('click', openModal);
+
+function openModal() {
+  txType = 'giris';
+  selectedProduct = null;
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.id = 'modalOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h2>Yeni İşlem</h2>
+      <div class="type-tabs">
+        <button id="typeGiris" class="sel-giris" onclick="setType('giris')">Giriş</button>
+        <button id="typeCikis" onclick="setType('cikis')">Çıkış</button>
+        <button id="typeTransfer" onclick="setType('transfer')">Transfer</button>
+      </div>
+
+      <div id="depotFields"></div>
+
+      <label>Ürün</label>
+      <input type="text" id="prodSearch" placeholder="Ürün adı veya kod ara..." autocomplete="off" oninput="searchProduct(this.value)">
+      <div class="autocomplete-list" id="acList"></div>
+      <div id="selectedProdBox"></div>
+
+      <label>Miktar</label>
+      <input type="number" id="miktarInput" placeholder="Örn: 12" min="0" step="0.01">
+
+      <label>Not (opsiyonel)</label>
+      <input type="text" id="noteInput" placeholder="Örn: tedarikçi adı, sebep...">
+
+      <div class="err" id="modalErr"></div>
+
+      <button class="save-btn" onclick="saveTransaction()">Kaydet</button>
+      <button class="cancel-btn" onclick="closeModal()">Vazgeç</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  renderDepotFields();
+}
+
+function closeModal() {
+  const o = document.getElementById('modalOverlay');
+  if (o) o.remove();
+}
+
+function setType(t) {
+  txType = t;
+  ['typeGiris','typeCikis','typeTransfer'].forEach(id => document.getElementById(id).className = '');
+  document.getElementById('typeGiris').className = t==='giris' ? 'sel-giris' : '';
+  document.getElementById('typeCikis').className = t==='cikis' ? 'sel-cikis' : '';
+  document.getElementById('typeTransfer').className = t==='transfer' ? 'sel-transfer' : '';
+  renderDepotFields();
+}
+
+function renderDepotFields() {
+  const box = document.getElementById('depotFields');
+  const opts = Object.keys(depots).map(id => `<option value="${id}">${depots[id]}</option>`).join('');
+  if (txType === 'transfer') {
+    box.innerHTML = `
+      <label>Nereden</label>
+      <select id="fromDepot">${opts}</select>
+      <label>Nereye</label>
+      <select id="toDepot">${opts}</select>
+    `;
+    // default: yan -> ana
+    setTimeout(() => {
+      const to = document.getElementById('toDepot');
+      if (to) to.value = 'ana';
+      const from = document.getElementById('fromDepot');
+      if (from) from.value = 'yan1';
+    }, 0);
+  } else {
+    box.innerHTML = `
+      <label>Depo</label>
+      <select id="singleDepot">${opts}</select>
+    `;
+  }
+}
+
+function searchProduct(q) {
+  const acList = document.getElementById('acList');
+  q = q.trim().toLowerCase();
+  if (q.length < 2) { acList.innerHTML = ''; return; }
+  const matches = PRODUCTS.filter(p =>
+    p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q)
+  ).slice(0, 20);
+  acList.innerHTML = matches.map(p =>
+    `<div onclick='pickProduct("${p[0]}")'>${p[1]} <div class="ac-code">${p[0]} · ${p[2]}</div></div>`
+  ).join('');
+}
+
+function pickProduct(kod) {
+  const p = PRODUCTS.find(x => x[0] === kod);
+  selectedProduct = p;
+  document.getElementById('acList').innerHTML = '';
+  document.getElementById('prodSearch').value = '';
+  document.getElementById('selectedProdBox').innerHTML =
+    `<div style="background:#eef2fb;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:13px;">
+      Seçilen: <b>${p[1]}</b> (${p[0]}, ${p[2]})
+      <span onclick="clearProduct()" style="float:right;color:#c62828;cursor:pointer;">&times;</span>
+    </div>`;
+}
+
+function clearProduct() {
+  selectedProduct = null;
+  document.getElementById('selectedProdBox').innerHTML = '';
+}
+
+function saveTransaction() {
+  const errBox = document.getElementById('modalErr');
+  errBox.style.display = 'none';
+
+  if (!selectedProduct) {
+    errBox.textContent = 'Lütfen bir ürün seç.';
+    errBox.style.display = 'block';
+    return;
+  }
+  const miktar = parseFloat(document.getElementById('miktarInput').value);
+  if (!miktar || miktar <= 0) {
+    errBox.textContent = 'Geçerli bir miktar gir.';
+    errBox.style.display = 'block';
+    return;
+  }
+
+  const note = document.getElementById('noteInput').value.trim();
+  const [kod, ad, birim] = selectedProduct;
+  const now = Date.now();
+
+  if (txType === 'transfer') {
+    const from = document.getElementById('fromDepot').value;
+    const to = document.getElementById('toDepot').value;
+    if (from === to) {
+      errBox.textContent = 'Kaynak ve hedef depo aynı olamaz.';
+      errBox.style.display = 'block';
+      return;
+    }
+    const fromCurrent = (stock[from] && stock[from][kod]) || 0;
+    const toCurrent = (stock[to] && stock[to][kod]) || 0;
+    db.ref(`stock/${from}/${kod}`).set(round2(fromCurrent - miktar));
+    db.ref(`stock/${to}/${kod}`).set(round2(toCurrent + miktar));
+    db.ref('transactions').push({ type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now });
+  } else {
+    const depotId = document.getElementById('singleDepot').value;
+    const current = (stock[depotId] && stock[depotId][kod]) || 0;
+    const newVal = txType === 'giris' ? current + miktar : current - miktar;
+    db.ref(`stock/${depotId}/${kod}`).set(round2(newVal));
+    db.ref('transactions').push({ type: txType, depotId, kod, ad, birim, miktar, note, ts: now });
+  }
+
+  closeModal();
+}
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+render();
+</script>
+</body>
+</html>
