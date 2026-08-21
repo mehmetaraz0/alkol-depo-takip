@@ -327,7 +327,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v12';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v14';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -583,7 +583,13 @@ function exportReportCsv() {
   });
 
   const csv = rows.map(r => r.map(cell => {
-    const s = String(cell).replace(/"/g, '""');
+    let s = String(cell).replace(/"/g, '""');
+    // Excel/Sheets'te formul olarak calismasin diye =, +, -, @ ile baslayan
+    // hucreler kacisli tek tirnakla basliyor (CSV formul enjeksiyonu) —
+    // saf sayisal hucreler (orn. negatif stok toplami) haric tutulur,
+    // yoksa raporun kendi rakamlari metne donup toplam bozulur
+    const sayisalMi = /^-?\d+(?:\.\d+)?$/.test(s);
+    if (!sayisalMi && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",;\n]/.test(s) ? `"${s}"` : s;
   }).join(';')).join('\r\n');
 
@@ -724,9 +730,11 @@ function renderSettings() {
   html += `<div class="ayar-blok"><h3>Güvenlik</h3>
     <div class="ayar-satir"><span>Giriş PIN'i</span>
       <button class="ayar-btn" onclick="pinDegistir()">${pinOzeti ? 'Değiştir' : 'Belirle'}</button></div>
-    <div class="ayar-not">PIN, telefonu eline alan birinin stok kayıtlarını değiştirmesini
-    engeller. Veritabanı adresini bilen biri uygulamayı hiç kullanmadan veriye
-    erişebilir — bunun için Firebase kimlik doğrulaması gerekir.</div>
+    <div class="ayar-not">PIN yalnızca telefonu eline alan birinin uygulama üzerinden kayıt
+    değiştirmesini engeller. Veritabanı adresini bilen biri uygulamayı hiç açmadan, PIN'i
+    hiç görmeden veriyi <strong>okuyabilir, değiştirebilir ve silebilir</strong> — bu, PIN'in
+    kapatamayacağı bir açıktır ve kapatmak için Firebase kimlik doğrulaması ve güvenlik
+    kuralları gerekir.</div>
   </div>`;
 
   html += `<div class="ayar-blok"><h3>Cihaz</h3>
@@ -909,37 +917,69 @@ function applyDeltaLocal(depotId, kod, delta) {
   stock[depotId][kod] = round2((stock[depotId][kod] || 0) + delta);
 }
 
+let kuyrukIsleniyor = false; // ayni kuyruk ogesinin ust uste calisan trySyncQueue cagrilarinda iki kez uygulanmasini engeller
+
 function trySyncQueue() {
   if (!navigator.onLine) { updateOfflineBar(); return; }
+  if (kuyrukIsleniyor) return; // setInterval, 'online' olayi ve dogrudan cagri ust uste binebilir
   const q = getQueue();
   if (q.length === 0) { updateOfflineBar(); return; }
+  kuyrukIsleniyor = true;
   updateOfflineBar();
 
   const next = q[0];
   const applyOne = (depotId, kod, delta) =>
     db.ref(`stock/${depotId}/${kod}`).transaction(cur => round2((cur || 0) + delta));
 
-  const finishItem = () => {
-    const remaining = getQueue().slice(1);
-    setQueue(remaining);
-    updateOfflineBar();
-    if (remaining.length > 0) setTimeout(trySyncQueue, 200);
+  // Baslangicta hangi adimlarin daha once (ag kopmasi oncesi bir denemede) tamamlandigini
+  // kuyruktaki ogeden okur; sadece kalan adimlar tekrar denenir, tamamlanmis adimlar
+  // ikinci kez uygulanmaz.
+  const guncelleKuyrukOgesi = (yamalar) => {
+    Object.assign(next, yamalar);
+    const guncel = getQueue();
+    if (guncel.length && guncel[0].localId === next.localId) {
+      Object.assign(guncel[0], yamalar);
+      setQueue(guncel);
+    }
   };
 
-  const pushTxRecord = () => {
+  const bitir = () => {
+    try {
+      const remaining = getQueue().slice(1);
+      setQueue(remaining);
+      if (remaining.length > 0) setTimeout(trySyncQueue, 200);
+    } finally {
+      kuyrukIsleniyor = false; // setQueue patlasa bile kilit kalici olmaz
+      updateOfflineBar();
+    }
+  };
+
+  const hataOldu = () => { kuyrukIsleniyor = false; setTimeout(trySyncQueue, 5000); };
+
+  const kaydiGonder = () => {
+    if (next._kaydedildi) { bitir(); return; }
     const rec = {...next};
-    delete rec.localId;
-    db.ref('transactions').push(rec).then(finishItem).catch(() => setTimeout(trySyncQueue, 5000));
+    // localId bilerek KALIYOR: push() sonrasi baglanti koparsa ve tekrar
+    // denemede ayni kayit ikinci kez push edilirse, bu alan sayesinde
+    // kopya tespit edilebilir kalir (aksi halde iz sürülemez, bkz. inceleme).
+    delete rec._stokUygulandi;
+    delete rec._fromUygulandi;
+    delete rec._toUygulandi;
+    delete rec._kaydedildi;
+    db.ref('transactions').push(rec).then(() => { guncelleKuyrukOgesi({ _kaydedildi: true }); bitir(); }).catch(hataOldu);
   };
 
   if (next.type === 'transfer') {
-    Promise.all([
-      applyOne(next.fromDepot, next.kod, -next.miktar),
-      applyOne(next.toDepot, next.kod, next.miktar)
-    ]).then(pushTxRecord).catch(() => setTimeout(trySyncQueue, 5000));
+    const cikisSozu = next._fromUygulandi ? Promise.resolve()
+      : applyOne(next.fromDepot, next.kod, -next.miktar).then(() => guncelleKuyrukOgesi({ _fromUygulandi: true }));
+    const girisSozu = next._toUygulandi ? Promise.resolve()
+      : applyOne(next.toDepot, next.kod, next.miktar).then(() => guncelleKuyrukOgesi({ _toUygulandi: true }));
+    Promise.all([cikisSozu, girisSozu]).then(kaydiGonder).catch(hataOldu);
+  } else if (next._stokUygulandi) {
+    kaydiGonder();
   } else {
     const delta = next.type === 'giris' ? next.miktar : -next.miktar;
-    applyOne(next.depotId, next.kod, delta).then(pushTxRecord).catch(() => setTimeout(trySyncQueue, 5000));
+    applyOne(next.depotId, next.kod, delta).then(() => { guncelleKuyrukOgesi({ _stokUygulandi: true }); kaydiGonder(); }).catch(hataOldu);
   }
 }
 
@@ -983,6 +1023,7 @@ db.ref('customProducts').on('value', snap => {
 let txType = 'giris';
 let selectedProduct = null;
 let quickDepotContext = null; // ürün satırından tıklanınca hangi depo bağlamında açıldığı
+let islemKaydediliyor = false; // cift-tiklama/cift-dokunma korumasi (saveTransaction)
 
 document.getElementById('fabBtn').addEventListener('click', () => {
   quickDepotContext = openDepotDetail || null;
@@ -1184,6 +1225,7 @@ function stokUyarisiGec(depoId, kod, miktar, birim) {
 }
 
 function saveTransaction() {
+  if (islemKaydediliyor) return; // ayni islemin cift-tiklama/cift-dokunmayla iki kez kaydedilmesini engeller
   const errBox = document.getElementById('modalErr');
   errBox.style.display = 'none';
 
@@ -1204,40 +1246,50 @@ function saveTransaction() {
   const now = Date.now();
   const localId = 'local_' + now + '_' + Math.random().toString(36).slice(2,8);
 
-  let txRecord;
-  if (txType === 'transfer') {
-    const from = document.getElementById('fromDepot').value;
-    const to = document.getElementById('toDepot').value;
-    if (from === to) {
-      errBox.textContent = 'Kaynak ve hedef depo aynı olamaz.';
-      errBox.style.display = 'block';
-      return;
+  islemKaydediliyor = true;
+  try {
+    let txRecord;
+    if (txType === 'transfer') {
+      const from = document.getElementById('fromDepot').value;
+      const to = document.getElementById('toDepot').value;
+      if (from === to) {
+        errBox.textContent = 'Kaynak ve hedef depo aynı olamaz.';
+        errBox.style.display = 'block';
+        return;
+      }
+      if (!stokUyarisiGec(from, kod, miktar, birim)) return;
+      txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId };
+      applyDeltaLocal(from, kod, -miktar);
+      applyDeltaLocal(to, kod, miktar);
+    } else {
+      const depotId = document.getElementById('singleDepot').value;
+      if (txType === 'cikis' && !stokUyarisiGec(depotId, kod, miktar, birim)) return;
+      txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId };
+      const delta = txType === 'giris' ? miktar : -miktar;
+      applyDeltaLocal(depotId, kod, delta);
     }
-    if (!stokUyarisiGec(from, kod, miktar, birim)) return;
-    txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId };
-    applyDeltaLocal(from, kod, -miktar);
-    applyDeltaLocal(to, kod, miktar);
-  } else {
-    const depotId = document.getElementById('singleDepot').value;
-    if (txType === 'cikis' && !stokUyarisiGec(depotId, kod, miktar, birim)) return;
-    txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId };
-    const delta = txType === 'giris' ? miktar : -miktar;
-    applyDeltaLocal(depotId, kod, delta);
+
+    // Anında ekranda göster (internet olmasa bile)
+    transactions.unshift(txRecord);
+    saveCache();
+
+    // Kuyruğa ekle ve senkronizasyonu dene
+    const q = getQueue();
+    q.push(txRecord);
+    setQueue(q);
+    updateOfflineBar();
+    trySyncQueue();
+
+    closeModal();
+    render();
+  } catch (e) {
+    errBox.textContent = 'Kayıt yapılamadı — cihaz depolaması dolu ya da erişilemez olabilir.';
+    errBox.style.display = 'block';
+    throw e;
+  } finally {
+    // ayni islemi hemen tekrar kaydetmeyi engelleyen kisa sogutma; hata olsa bile kilit kalici olmaz
+    setTimeout(() => { islemKaydediliyor = false; }, 500);
   }
-
-  // Anında ekranda göster (internet olmasa bile)
-  transactions.unshift(txRecord);
-  saveCache();
-
-  // Kuyruğa ekle ve senkronizasyonu dene
-  const q = getQueue();
-  q.push(txRecord);
-  setQueue(q);
-  updateOfflineBar();
-  trySyncQueue();
-
-  closeModal();
-  render();
 }
 
 function geriAl(id) {
