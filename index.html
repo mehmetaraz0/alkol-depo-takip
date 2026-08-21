@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Alkol Depo Takip</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1f3864">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Depo">
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {
@@ -111,7 +117,20 @@
   .tx-transfer { background: #e3f2fd; color: #1565c0; }
   .tx-name { font-size: 14px; font-weight: 500; margin-top: 4px; }
   .tx-meta { font-size: 11px; color: #999; margin-top: 2px; }
+  .tx-undo {
+    background: none; border: 1px solid #ddd; border-radius: 8px;
+    color: #c62828; font-size: 12px; font-weight: 600;
+    padding: 5px 12px; margin-top: 8px;
+  }
+  .tx-reverted { opacity: .55; }
+  .tx-revert-badge { background: #f0f0f0; color: #666; }
   .empty-state { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; }
+
+  .filtre-satiri { display: flex; gap: 8px; margin-bottom: 10px; }
+  .filtre-satiri select {
+    flex: 1; min-width: 0; padding: 9px 8px; border-radius: 10px;
+    border: 1px solid #ddd; background: #fff; font-size: 13px;
+  }
 
   /* Rapor */
   .report-actions { display: flex; gap: 8px; margin-bottom: 10px; }
@@ -131,6 +150,46 @@
     table.report-table th:first-child, table.report-table td:first-child { position: static; }
     table.report-table thead th { position: static; }
   }
+
+  #guncellemeBari {
+    display: none; position: fixed; left: 12px; right: 12px; bottom: 88px;
+    background: #1565c0; color: #fff; border-radius: 10px; padding: 12px 14px;
+    font-size: 13px; z-index: 40; box-shadow: 0 3px 12px rgba(0,0,0,.3);
+    align-items: center; justify-content: space-between; gap: 10px;
+  }
+  #guncellemeBari button {
+    background: #fff; color: #1565c0; border: none; border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; font-weight: 700;
+  }
+
+  /* Ayarlar */
+  .ayar-blok { background: #fff; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
+  .ayar-blok h3 { margin: 0 0 10px; font-size: 14px; font-weight: 700; color: #1f3864; }
+  .ayar-satir { display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+  .ayar-satir:last-child { border-bottom: none; }
+  .ayar-btn { background: #1f3864; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 14px; font-size: 13px; font-weight: 600; }
+  .ayar-btn.tehlike { background: none; color: #c62828; border: 1px solid #f0c0c0; }
+  .ayar-not { font-size: 12px; color: #888; line-height: 1.5; margin-top: 8px; }
+
+  /* PIN ekrani */
+  #pinEkrani {
+    position: fixed; inset: 0; background: #1f3864; z-index: 100;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; color: #fff;
+  }
+  #pinEkrani h2 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+  #pinEkrani .alt { font-size: 13px; opacity: .7; margin-bottom: 26px; }
+  #pinEkrani input {
+    width: 180px; padding: 14px; border-radius: 12px; border: none;
+    font-size: 26px; text-align: center; letter-spacing: 10px; background: #fff; color: #1a1a1a;
+  }
+  #pinEkrani .pin-hata { color: #ffb4b4; font-size: 13px; margin-top: 12px; min-height: 18px; }
+  #pinEkrani button {
+    margin-top: 18px; width: 180px; padding: 13px; border-radius: 10px; border: none;
+    background: #fff; color: #1f3864; font-size: 15px; font-weight: 700;
+  }
 </style>
 </head>
 <body>
@@ -145,14 +204,21 @@
 
 <button class="fab" id="fabBtn">+</button>
 
+<div id="guncellemeBari">
+  <span>Yeni sürüm hazır.</span>
+  <button onclick="guncellemeyiUygula()">Yenile</button>
+</div>
+
 <nav class="bottom">
   <button data-tab="depolar" class="active"><span class="icon">&#9673;</span>Depolar</button>
   <button data-tab="rapor"><span class="icon">&#9636;</span>Rapor</button>
   <button data-tab="gecmis"><span class="icon">&#8635;</span>Geçmiş</button>
+  <button data-tab="ayarlar"><span class="icon">&#9881;</span>Ayarlar</button>
 </nav>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="products.js"></script>
 <script>
 const firebaseConfig = {
   apiKey: "AIzaSyA3T0cLeSZK70In_RWcqkq3QEk8nzvBAJA",
@@ -166,8 +232,86 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-// [kod, ad, birim, grup]
-const PRODUCTS = [["ICB01000010", "BIRA MALT 25 CL 24 LU", "kol", "BIRALAR"], ["ICB01000011", "BIRA SISE 30 CL 24 LU", "kol", "BIRALAR"], ["ICB01000013", "BIRA TUBORG GOLD 30LU", "kol", "BIRALAR"], ["ICB01000005", "BIRA FICI 50 LT", "fic", "BIRALAR"], ["ICB01000014", "BIRA FICI BECKS 30 LT", "fic", "BIRALAR"], ["ICB01000015", "BIRA FICI BUD 30 LT", "fic", "BIRALAR"], ["ICB01000016", "BIRA FICI BELFAST 30 LT", "fic", "BIRALAR"], ["ICB01000017", "BIRA FICI AROIS 30 LT", "fic", "BIRALAR"], ["ICB02000001", "ANGORA 37,5 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000003", "MINIBAR KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000005", "SOFRA SARABI KIRMIZI 75 C", "bot", "SOFRA SARAPLARI"], ["ICB02000017", "ANGORA KIRMIZI 75 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000056", "MYRINA KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000069", "SUVLA KABATEPE KIRMIZI SA", "bot", "SOFRA SARAPLARI"], ["ICB02000080", "IDOL KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000083", "PUNTA KIRMIZI SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000004", "MINIBAR BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000007", "SOFRA SARABI BEYAZ 75 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000057", "MYRINA BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000071", "SUVLA KABATEPE BEYAZ SARA", "bot", "SOFRA SARAPLARI"], ["ICB02000079", "IDOL BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000082", "PUNTA BEYAZ SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000006", "SOFRA SARABI ROSE 75 CL", "bot", "SOFRA SARAPLARI"], ["ICB02000058", "MYRINA ROZE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000070", "SUVLA KABATEPE ROSE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000081", "IDOL ROSE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000084", "PUNTA ROSE SARAP", "bot", "SOFRA SARAPLARI"], ["ICB02000060", "SAMPANYA PIERRE DE PAUL R", "bot", "SOFRA SARAPLARI"], ["ICB02000063", "CHANDON GARDEN SPRITZ", "bot", "SOFRA SARAPLARI"], ["ICB02000072", "SAMPANYA LA PASSION BEYAZ", "bot", "SOFRA SARAPLARI"], ["ICB02000078", "SAMPANYA SERENA FRIZZANTE", "bot", "SOFRA SARAPLARI"], ["ICB03000012", "RAKI YENI 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000015", "RAKI TEKIRDAG 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000019", "RAKI YAS UZUM EFE 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000020", "RAKI YAS UZUM 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000035", "RAKI EFE GOLD 70 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000054", "RAKI BEYLERBEYI GOBEK 100", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000059", "RAKI BEYLERBEYI TERA GOLD", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000067", "RAKI EFE GOLD 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000068", "RAKI SARI ZEYBEK ORJINAL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000069", "RAKI SARI ZEYBEK 3 MESE 1", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000070", "RAKI SARI ZEYBEK YAS UZUM", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000072", "RAKI SARI ZEYBEK YAS UZUM", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000022", "KANYAK 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000001", "LIKOR ACI PORTAKAL 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000002", "LIKOR MUZ 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000003", "LIKOR NANE 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000004", "LIKOR KAYISI 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000005", "LIKOR CILEK 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000008", "LIKOR ACIBADEM 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000009", "LIKOR PORTAKAL 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000010", "LIKOR SEFTALI 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000011", "LIKOR VISNE 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB03000024", "LIKOR KAVUN 100 CL", "bot", "YERLI ALKOLLU ICECEKLER"], ["ICB04000008", "BIRA BOMONTI 50 CL 20 LI", "kol", "IMPORT BIRALAR"], ["ICB04000001", "BIRA BECK S 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000002", "BIRA MILLER 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000004", "BIRA HEINEKEN SISE 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000006", "BIRA CARLSBERG 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000010", "BIRA BUD 33 CL (24 LU)", "kol", "IMPORT BIRALAR"], ["ICB04000011", "BIRA GLUTENSIZ 33 CL 24", "kol", "IMPORT BIRALAR"], ["ICB04000018", "BIRA PAULENER 33 CL 24 LU", "kol", "IMPORT BIRALAR"], ["ICB04000020", "BIRA HEINEKEN KUTU 25 CL", "kol", "IMPORT BIRALAR"], ["ICB04000024", "BIRA STELLA ARTOIS 20'LI", "kol", "IMPORT BIRALAR"], ["ICB05000008", "SARAFIN MERLOT 2006 75 CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000011", "MEMORO ROSSO", "bot", "PREMIUM SARAPLAR"], ["ICB05000015", "FRONTERA CABERNET SAUVIGN", "bot", "PREMIUM SARAPLAR"], ["ICB05000094", "BAD BOY MERLOT/ CABERNET", "bot", "PREMIUM SARAPLAR"], ["ICB05000136", "'M' MINUTY RUBY ROSE", "bot", "PREMIUM SARAPLAR"], ["ICB05000148", "MURIEL RIOJA CRIANZA FINC", "bot", "PREMIUM SARAPLAR"], ["ICB05000183", "ALNE PROSECCO TREVISO", "bot", "PREMIUM SARAPLAR"], ["ICB05000248", "SARAFIN FUME BLANC 75 CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000327", "CLOUDY BAY PINOT NOIR", "bot", "PREMIUM SARAPLAR"], ["ICB05000328", "BARONE MONTALTO CAB.SAV", "bot", "PREMIUM SARAPLAR"], ["ICB05000335", "MEANDROS MERLOT SHIRAZ", "bot", "PREMIUM SARAPLAR"], ["ICB05000336", "CONSENSUS SHIRAZ CABARNET", "bot", "PREMIUM SARAPLAR"], ["ICB05000338", "MON REVE OKUZGOZU", "bot", "PREMIUM SARAPLAR"], ["ICB05000341", "MON REVE TEMPRANILLO", "bot", "PREMIUM SARAPLAR"], ["ICB05000342", "ANTRE CABARNET S. MERLOT", "bot", "PREMIUM SARAPLAR"], ["ICB05000343", "ANTRE OKUZGOZU BOGAZKERE", "bot", "PREMIUM SARAPLAR"], ["ICB05000344", "ANTRE KALECIK KARASI SANG", "bot", "PREMIUM SARAPLAR"], ["ICB05000345", "SMYRNA CABARNET S.", "bot", "PREMIUM SARAPLAR"], ["ICB05000346", "SMYRNA SHIRAZ PETIT VERDO", "bot", "PREMIUM SARAPLAR"], ["ICB05000347", "SMYRNA MERLOT", "bot", "PREMIUM SARAPLAR"], ["ICB05000349", "SYMRNA GRENACHE SHIRAZ", "bot", "PREMIUM SARAPLAR"], ["ICB05000024", "DANZANTE PINOT GRIGIO 75", "bot", "PREMIUM SARAPLAR"], ["ICB05000103", "EGEO FUME BLANC", "bot", "PREMIUM SARAPLAR"], ["ICB05000115", "EGEO SAUVIGNON BLANC BEYA", "bot", "PREMIUM SARAPLAR"], ["ICB05000150", "CHATEAU DE SEGUIN SAUVIGN", "bot", "PREMIUM SARAPLAR"], ["ICB05000178", "COTES D'AVANOS SAUVIGNON", "bot", "PREMIUM SARAPLAR"], ["ICB05000209", "CLOUDY BAY SAUVIGNON BLAN", "bot", "PREMIUM SARAPLAR"], ["ICB05000258", "CLARENDELLE BY HAUT BRION", "bot", "PREMIUM SARAPLAR"], ["ICB05000326", "PRINZ V HESSEN RIESLING", "bot", "PREMIUM SARAPLAR"], ["ICB05000330", "LA PASSITO MISKET", "bot", "PREMIUM SARAPLAR"], ["ICB05000331", "CHABLIS DROUHIN VAUDON", "bot", "PREMIUM SARAPLAR"], ["ICB05000337", "CONSENSUS CHARDONAY", "bot", "PREMIUM SARAPLAR"], ["ICB05000339", "MON REVE CHARDONAY CHENIN", "bot", "PREMIUM SARAPLAR"], ["ICB05000340", "MON REVE S.BLANC PINOT GR", "bot", "PREMIUM SARAPLAR"], ["ICB05000348", "SMYRNA S.BLANC TREBBIANO", "bot", "PREMIUM SARAPLAR"], ["ICB05000350", "MON REVE VIOGNIER BEYAZ", "bot", "PREMIUM SARAPLAR"], ["ICB05000014", "WHISPERING ANGEL ROSE 75", "bot", "PREMIUM SARAPLAR"], ["ICB05000146", "EGEO ROSE SARAP 70 CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000195", "UP-ULTIMATE PROVENCE AOP", "bot", "PREMIUM SARAPLAR"], ["ICB05000293", "CIELO PIN GIRG BLUSH 75CL", "bot", "PREMIUM SARAPLAR"], ["ICB05000329", "MIRABEAU X ROSE", "bot", "PREMIUM SARAPLAR"], ["ICB06000070", "PICCINI FAMIGLIA ROSE", "bot", "IMPORT SAMPANYALAR"], ["ICB06000051", "BOTTEGA ROSE GOLD SPUMANT", "bot", "IMPORT SAMPANYALAR"], ["ICB06000061", "PICCINI PROSECCO DOC EXTR", "bot", "IMPORT SAMPANYALAR"], ["ICB06000001", "MUMM CORDON ROUGE BRUT", "bot", "IMPORT SAMPANYALAR"], ["ICB06000002", "DOM PERIGNON VINTAGE BRUT", "bot", "IMPORT SAMPANYALAR"], ["ICB06000015", "MOET&CHANDON BRUT IMPERIA", "bot", "IMPORT SAMPANYALAR"], ["ICB06000024", "MOET&CHANDON ICE BRUT IMP", "bot", "IMPORT SAMPANYALAR"], ["ICB06000071", "ITINERA PROSECCO", "bot", "IMPORT SAMPANYALAR"], ["ICB07000116", "CIN GILBEYS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000115", "VOTKA GILBEYS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000003", "BLUECURACO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000004", "AMARETTO DISARONNO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000005", "SAFARI 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000007", "COINTREAU 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000008", "JAGERMEISTER LIKOR 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000010", "LIKOR KAHLUA 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000011", "BAILEYS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000012", "BAILEYS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000013", "ARCHERS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000014", "CAMPARI 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000015", "BATIDA COCO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000016", "CAMPARI 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000080", "LIKOR SAMBUCA BUSSONI 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000104", "LIKOR RAMAZZOTTI AMARO 10", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000114", "AMARETTO DISARONNO 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000131", "LIKOR KEGLEVICH MELONE 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000133", "LIKOR KEGLEVICH CILEK 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000141", "LIKOR TRIPLE SEC 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000178", "LIKOR SHERIDAN'S 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000180", "RAMAZOTTI APERITIVO ROSAT", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000206", "LIKOR BACERS FIELD 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000225", "LIKOR CHAMBORD 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000226", "LIKOR 43 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000236", "LIKOR TRIPLE SEC 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000279", "LIKOR LILLET BLANC 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000280", "LIKOR LILLET ROSE 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000326", "LIKOR GRAND MARNIER 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000327", "LIKOR RAMAZOTTI CREMA 70C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000328", "JAGERMEISTER COLD BREW 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000331", "SAFARI 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000344", "DIPLOMATICA REZERVA EX.RH", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000345", "LIKOR KLEOS MASTIC 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000018", "MARTINI BIANCO 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000019", "GARRONE BIANCO 100 CL MA", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000021", "MARTINI EXTRA DRY 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000022", "GARRONE EXTRA DRY 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000023", "MARTINI ROSSO 75 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000099", "MARTINI BIANCO 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000111", "LIMONCELLO 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000150", "LIMONCELLO LIKOR 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000211", "LIMONCE 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000354", "MARTINI BITTER 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000144", "TEQUILA EL JIMADOR 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000174", "TEQUILA OLMECA GOLD 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000176", "TEQUILA EL JIMADOR REPOSA", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000215", "TEQUILA JOSE CUERVO SILVE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000231", "TEQUILA PATRON SILVER 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000232", "TEQUILA PATRON ANEJO 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000301", "TEQUILA SIP&SIP", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000314", "TEQUILA OLMECA SILVER 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000315", "TEQUILA JOSE CUERVO SILVE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000325", "DANGEROUS DON MEZCAL CAFE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000334", "TEQUILA PATRON EL CIELO 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000358", "TEQUILA EL JIMADOR 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000001", "CANARIO CACHACA 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000031", "MALIBU 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000032", "BACARDI CARDA BLANCA 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000033", "HAVANA CLUB BLANCO RHUM 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000034", "CAPTAIN MORGEN BLACK 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000112", "CAPTAIN MORGEN GOLD 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000149", "CAPTAIN MORGEN WHITE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000038", "JIM BEAM 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000039", "JAMESON 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000040", "JB RARE SCOTCH 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000041", "BALLANTINES FINES 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000042", "J.WALKER RED LABEL 100 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000121", "WHISKY FAMOUS GROUSE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000145", "WHISKY FAMOUS GROUSE 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000159", "WHISKY VAT 69 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000162", "DIMPLE GOLDEN SELECTION 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000278", "JAMESON BLACK BARREL 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000292", "WHISKY MAKER'S MARK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000294", "THE GENTLEMAN JACK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000296", "WHIS.PIKE CREK CANADIAN10", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000302", "THE GENTLEMAN JACK 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000346", "JIM BEAM 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000044", "JACK DANIELS 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000045", "J.WALKER BLACK LABEL 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000046", "CHIVAS REGAL 12 YILLIK 10", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000081", "CHIVAS ROYAL SALUTE 21Y 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000098", "J.WALKER BLACK LABEL 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000103", "THE GLENLIVET FOUNDER'S R", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000157", "WHISKY JACK DANIELS HONEY", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000200", "WHISKY LAGAVULIN 16 YO 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000202", "J.WALKER BLUE LABEL 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000216", "WHISKY MACALLAN 12 YRS 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000218", "WHISKY MONKEY SHOULDER 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000229", "CAOL LLA SINGLE MALT12YO", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000242", "JACK DANIELS 35 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000244", "WHISKY HIBIKI HARMONY 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000289", "WHISKY JACK DANIELS HONEY", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000318", "CHIWAS SMOOTH&SMOKY 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000319", "GLENMORANGIES TRIPLE CASK", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000342", "JACK DANILS BONDED RYE 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000356", "CHIWAS SMOOTH&SMOKY 100 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000049", "CIN BOMBAY SAPPHIRE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000051", "CIN GORDONS DRY 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000122", "CIN HENDRICKS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000140", "CIN BEEFEATER PINK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000163", "CIN GORDON'S PINK 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000164", "CIN TANQUERAY LONDON DRY", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000223", "CIN MONKEY 47 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000237", "CIN BEEFEATER 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000281", "CIN MALFY LIMONE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000282", "CIN MALFY ORIGINALE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000295", "CIN GIBSON'S KAN PORTAKAL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000306", "CIN GORDONS DRY 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000323", "CIN KNUT HANSEN 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000324", "CIN LONDON NO:1 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000332", "CIN BOMBAY SAPPHIRE 100 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000343", "CIN FORD'S 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000357", "CIN SEVENTY ONE", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000058", "VOTKA SMIRNOFF 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000124", "VOTKA GREY GOOSE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000125", "VOTKA ABSOLUT 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000153", "VOTKA BELVEDERE PURE 70 C", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000187", "VOTKA ABSOLUT RASPBERRY 7", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000188", "VOTKA ABSOLUT VANILLA ARO", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000189", "VOTKA ABSOLUT CITRON AROM", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000190", "VOTKA ABSOLUT LIME AROMA", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000219", "VOTKA BELUGA NOBLE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000221", "VOTKA KETEL ONE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000303", "VOTKA STOLICHNAYA TUZ KAR", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000320", "VOTKA RUSSIAN STANDART 70", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000321", "VOTKA STOLICHNAYA 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000322", "VOTKA ZUBROWKA 70CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000333", "VOTKA ZUBROWKA 100 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000064", "APEROL 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000065", "FERNET BRANCA 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000091", "GRAPPA CLASSICIA 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000109", "ABSINTHE 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000347", "ABSINTHE 50 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000066", "KANYAK MARTEL VS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000067", "KANYAK HENNESY VS 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000138", "KANYAK ST. REMY VSOP 100", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000177", "KANYAK METAXA 7 (70 CL)", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000070", "KANYAK MARTEL VSOP 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"], ["ICB07000092", "KANYAK MARTEL XO 70 CL", "bot", "IMPORT ALKOLLU ICECEKLER"]];
+// ===== PIN dogrulama =====
+async function sha256(metin) {
+  const tampon = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(metin));
+  return [...new Uint8Array(tampon)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+const PIN_HATIRLA_GUN = 30;
+let pinOzeti = localStorage.getItem('cache_pin_hash') || null;
+
+db.ref('settings/pinHash').on('value', snap => {
+  const deger = snap.val();
+  if (deger) {
+    pinOzeti = deger;
+    localStorage.setItem('cache_pin_hash', deger);   // cevrimdisi dogrulama icin sart
+  }
+});
+
+function cihazDogrulanmisMi() {
+  const zaman = Number(localStorage.getItem('pin_dogrulandi') || 0);
+  return zaman > 0 && (Date.now() - zaman) < PIN_HATIRLA_GUN * 86400000;
+}
+
+function pinEkraniniGoster(kip) {
+  const kurulum = kip === 'kurulum';
+  const ekran = document.createElement('div');
+  ekran.id = 'pinEkrani';
+  ekran.innerHTML = `
+    <h2>${kurulum ? 'PIN Belirle' : 'Alkol Depo Takip'}</h2>
+    <div class="alt">${kurulum ? '4 haneli bir kod seç' : 'Devam etmek için PIN gir'}</div>
+    <input id="pinGirdi" type="password" inputmode="numeric" maxlength="4"
+           autocomplete="off" enterkeyhint="done" placeholder="····">
+    <div class="pin-hata" id="pinHata"></div>
+    <button id="pinOnayBtn">${kurulum ? 'Kaydet' : 'Gir'}</button>
+  `;
+  document.body.appendChild(ekran);
+
+  const girdi = document.getElementById('pinGirdi');
+  const hata = document.getElementById('pinHata');
+  girdi.focus();
+
+  async function onayla() {
+    const kod = girdi.value.trim();
+    if (!/^\d{4}$/.test(kod)) { hata.textContent = 'PIN 4 rakam olmalı.'; return; }
+    const ozet = await sha256(kod);
+
+    if (kurulum) {
+      await db.ref('settings/pinHash').set(ozet);
+      pinOzeti = ozet;
+      localStorage.setItem('cache_pin_hash', ozet);
+    } else if (ozet !== pinOzeti) {
+      hata.textContent = 'PIN hatalı.';
+      girdi.value = '';
+      girdi.focus();
+      return;
+    }
+
+    localStorage.setItem('pin_dogrulandi', String(Date.now()));
+    ekran.remove();
+    bekleyenRenderiBosalt();
+  }
+
+  document.getElementById('pinOnayBtn').addEventListener('click', onayla);
+  girdi.addEventListener('keydown', e => { if (e.key === 'Enter') onayla(); });
+}
+
+async function pinDegistir() {
+  if (pinOzeti) {
+    const eski = (prompt('Mevcut PIN:') || '').trim();
+    if (!eski) return;
+    if (await sha256(eski) !== pinOzeti) { alert('Mevcut PIN hatalı.'); return; }
+  }
+  const yeni = (prompt('Yeni PIN (4 rakam):') || '').trim();
+  if (!/^\d{4}$/.test(yeni)) { alert('PIN 4 rakam olmalı.'); return; }
+  const ozet = await sha256(yeni);
+  await db.ref('settings/pinHash').set(ozet);
+  pinOzeti = ozet;
+  localStorage.setItem('cache_pin_hash', ozet);
+  localStorage.setItem('pin_dogrulandi', String(Date.now()));
+  alert('PIN güncellendi.');
+}
 
 const DEFAULT_DEPOTS = {
   ana: "Ana Depo",
@@ -181,6 +325,9 @@ let transactions = [];
 let currentTab = 'depolar';
 let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
+let customProducts = {};
+
+const SURUM = 'v11';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -189,15 +336,35 @@ function fmtNum(n) {
   return n % 1 === 0 ? n.toString() : n.toFixed(2);
 }
 
+function escapeHtml(deger) {
+  return String(deger == null ? '' : deger)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function prodMap() {
+  const m = {};
+  PRODUCTS.forEach(p => m[p[0]] = p);
+  Object.keys(customProducts).forEach(kod => {
+    const c = customProducts[kod];
+    if (!c || typeof c.ad !== 'string' || typeof c.birim !== 'string' || typeof c.grup !== 'string') return;
+    m[kod] = [kod, c.ad, c.birim, c.grup];
+  });
+  return m;
+}
+
 function renderDepotList() {
   let html = '<div class="depot-grid">';
   for (const id of Object.keys(depots)) {
     const items = stock[id] || {};
     const codes = Object.keys(items).filter(k => items[k] > 0);
     const totalUnits = codes.reduce((s,k) => s + (items[k]||0), 0);
-    html += `<div class="depot-card" onclick="openDepot('${id}')">
+    html += `<div class="depot-card" onclick="openDepot('${escapeHtml(id)}')">
       <div class="name" onclick="event.stopPropagation()">
-        <input value="${depots[id]}" onchange="renameDepot('${id}', this.value)">
+        <input value="${escapeHtml(depots[id])}" onchange="renameDepot('${escapeHtml(id)}', this.value)">
       </div>
       <div class="stats">
         <div class="num">${codes.length}</div>
@@ -212,86 +379,125 @@ function renderDepotList() {
 function openDepot(id) {
   openDepotDetail = id;
   renderDepotDetail();
+  history.pushState({ depotAcik: true }, '');
 }
 
 function renameDepot(id, val) {
-  val = val.trim() || DEFAULT_DEPOTS[id];
+  val = val.trim() || DEFAULT_DEPOTS[id] || depots[id];
   depots[id] = val;
   db.ref('depots/' + id).set(val);
 }
 
 function renderDepotDetail() {
   const id = openDepotDetail;
-  const items = stock[id] || {};
-  const codes = Object.keys(items).filter(k => items[k] !== 0);
+  app.innerHTML =
+    `<button onclick="backToList()" style="background:none;border:none;color:#1f3864;font-size:14px;padding:6px 0;margin-bottom:6px;">&larr; Depolar</button>` +
+    `<div class="section-title">${escapeHtml(depots[id])} &middot; Stok Durumu</div>` +
+    `<input class="search-box" id="depotSearchBox" placeholder="Ürün ara (stokta olmasa da)..." value="${escapeHtml(depotSearchQuery)}">` +
+    `<div id="depotBody"></div>`;
 
-  // group by grup from PRODUCTS
-  const prodMap = {};
-  PRODUCTS.forEach(p => prodMap[p[0]] = p);
-
-  const grouped = {};
-  codes.forEach(k => {
-    const p = prodMap[k];
-    const grup = p ? p[3] : 'DİĞER';
-    if (!grouped[grup]) grouped[grup] = [];
-    grouped[grup].push(k);
+  const kutu = document.getElementById('depotSearchBox');
+  kutu.addEventListener('input', () => {
+    depotSearchQuery = kutu.value;
+    renderDepotBody();
   });
+  renderDepotBody();
+}
 
-  let html = `<button onclick="backToList()" style="background:none;border:none;color:#1f3864;font-size:14px;padding:6px 0;margin-bottom:6px;">&larr; Depolar</button>`;
-  html += `<div class="section-title">${depots[id]} &middot; Stok Durumu</div>`;
-  html += `<input class="search-box" id="depotSearchBox" placeholder="Ürün ara (stokta olmasa da)..." value="${depotSearchQuery}" oninput="depotSearchQuery=this.value; renderDepotDetail(); setTimeout(()=>{const b=document.getElementById('depotSearchBox'); if(b){b.focus(); b.setSelectionRange(b.value.length,b.value.length);}},0);">`;
+function renderDepotBody() {
+  const id = openDepotDetail;
+  const govde = document.getElementById('depotBody');
+  if (!govde) return;
+  const items = stock[id] || {};
+  const pm = prodMap();
+  let html = '';
 
   if (depotSearchQuery.trim().length >= 2) {
     const q = depotSearchQuery.trim().toLowerCase();
-    const matches = PRODUCTS.filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q)).slice(0, 40);
-    if (matches.length === 0) {
-      html += `<div class="empty-state">Sonuç bulunamadı.</div>`;
+    const eslesenler = Object.values(pm)
+      .filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q))
+      .slice(0, 40);
+    if (eslesenler.length === 0) {
+      html = `<div class="empty-state">Sonuç bulunamadı.</div>`;
     } else {
-      matches.forEach(p => {
-        const qty = (items[p[0]] || 0);
-        html += `<div class="prod-row" onclick="quickTap('${id}','${p[0]}')">
-          <div class="info"><div class="pname">${p[1]}</div><div class="pcode">${p[0]}</div></div>
-          <div class="pqty">${fmtNum(qty)}<div class="unit">${p[2]}</div></div>
+      eslesenler.forEach(p => {
+        const adet = items[p[0]] || 0;
+        html += `<div class="prod-row" onclick="quickTap('${escapeHtml(id)}','${escapeHtml(p[0])}')">
+          <div class="info"><div class="pname">${escapeHtml(p[1])}</div><div class="pcode">${escapeHtml(p[0])}</div></div>
+          <div class="pqty">${fmtNum(adet)}<div class="unit">${escapeHtml(p[2])}</div></div>
         </div>`;
       });
     }
-    app.innerHTML = html;
+    govde.innerHTML = html;
     return;
   }
 
-  if (codes.length === 0) {
-    html += `<div class="empty-state">Bu depoda henüz stok kaydı yok.<br>Yukarıdan ürün arayıp ekleyebilir ya da sağ alttaki + butonunu kullanabilirsin.</div>`;
-  } else {
-    Object.keys(grouped).sort().forEach(grup => {
-      html += `<div class="group-header">${grup}</div>`;
-      grouped[grup].sort((a,b) => {
-        const pa = prodMap[a], pb = prodMap[b];
-        return (pa?pa[1]:a).localeCompare(pb?pb[1]:b);
-      }).forEach(k => {
-        const p = prodMap[k];
-        const name = p ? p[1] : k;
-        const unit = p ? p[2] : '';
-        html += `<div class="prod-row" onclick="quickTap('${id}','${k}')">
-          <div class="info"><div class="pname">${name}</div><div class="pcode">${k}</div></div>
-          <div class="pqty">${fmtNum(items[k])}<div class="unit">${unit}</div></div>
+  const kodlar = Object.keys(items).filter(k => items[k] !== 0);
+  if (kodlar.length === 0) {
+    govde.innerHTML = `<div class="empty-state">Bu depoda henüz stok kaydı yok.<br>Yukarıdan ürün arayıp ekleyebilir ya da sağ alttaki + butonunu kullanabilirsin.</div>`;
+    return;
+  }
+
+  const gruplu = {};
+  kodlar.forEach(k => {
+    const grup = pm[k] ? pm[k][3] : 'DİĞER';
+    (gruplu[grup] = gruplu[grup] || []).push(k);
+  });
+
+  Object.keys(gruplu).sort().forEach(grup => {
+    html += `<div class="group-header">${escapeHtml(grup)}</div>`;
+    gruplu[grup]
+      .sort((a, b) => (pm[a] ? pm[a][1] : a).localeCompare(pm[b] ? pm[b][1] : b))
+      .forEach(k => {
+        const ad = pm[k] ? pm[k][1] : k;
+        const birim = pm[k] ? pm[k][2] : '';
+        html += `<div class="prod-row" onclick="quickTap('${escapeHtml(id)}','${escapeHtml(k)}')">
+          <div class="info"><div class="pname">${escapeHtml(ad)}</div><div class="pcode">${escapeHtml(k)}</div></div>
+          <div class="pqty">${fmtNum(items[k])}<div class="unit">${escapeHtml(birim)}</div></div>
         </div>`;
       });
-    });
-  }
-  app.innerHTML = html;
+  });
+  govde.innerHTML = html;
 }
 
-function backToList() {
+function depotListesineDon() {
   openDepotDetail = null;
   depotSearchQuery = '';
   renderDepotList();
 }
 
+function backToList() {
+  if (history.state && history.state.depotAcik) {
+    history.back();   // popstate tetiklenir, depotListesineDon cagirilir
+  } else {
+    depotListesineDon();
+  }
+}
+
 let reportSearchQuery = '';
 
 function renderReport() {
-  const prodMap = {};
-  PRODUCTS.forEach(p => prodMap[p[0]] = p);
+  app.innerHTML =
+    `<div class="section-title">Stok Raporu &middot; Tüm Depolar</div>` +
+    `<div class="report-actions">
+      <button onclick="window.print()">Yazdır</button>
+      <button onclick="exportReportCsv()">Excel'e Aktar</button>
+    </div>` +
+    `<input class="search-box" id="reportSearchBox" placeholder="Ürün ara..." value="${escapeHtml(reportSearchQuery)}">` +
+    `<div id="reportBody"></div>`;
+
+  const kutu = document.getElementById('reportSearchBox');
+  kutu.addEventListener('input', () => {
+    reportSearchQuery = kutu.value;
+    renderReportBody();
+  });
+  renderReportBody();
+}
+
+function renderReportBody() {
+  const govde = document.getElementById('reportBody');
+  if (!govde) return;
+  const pm = prodMap();
   const depotIds = Object.keys(depots);
 
   // hangi ürün kodları herhangi bir depoda stoklu
@@ -304,39 +510,33 @@ function renderReport() {
   const q = reportSearchQuery.trim().toLowerCase();
   if (q) {
     codes = codes.filter(k => {
-      const p = prodMap[k];
+      const p = pm[k];
       return (p ? p[1].toLowerCase() : k.toLowerCase()).includes(q) || k.toLowerCase().includes(q);
     });
   }
 
   const grouped = {};
   codes.forEach(k => {
-    const p = prodMap[k];
+    const p = pm[k];
     const grup = p ? p[3] : 'DİĞER';
     if (!grouped[grup]) grouped[grup] = [];
     grouped[grup].push(k);
   });
 
-  let html = `<div class="section-title">Stok Raporu &middot; Tüm Depolar</div>`;
-  html += `<div class="report-actions">
-    <button onclick="window.print()">Yazdır</button>
-    <button onclick="exportReportCsv()">Excel'e Aktar</button>
-  </div>`;
-  html += `<input class="search-box" placeholder="Ürün ara..." value="${reportSearchQuery}" oninput="reportSearchQuery=this.value; renderReport();">`;
-
+  let html = '';
   if (codes.length === 0) {
-    html += `<div class="empty-state">Gösterilecek stok kaydı yok.</div>`;
+    html = `<div class="empty-state">Gösterilecek stok kaydı yok.</div>`;
   } else {
-    html += `<div class="report-table-wrap"><table class="report-table"><thead><tr>
-      <th>Ürün</th>${depotIds.map(id => `<th>${depots[id]}</th>`).join('')}<th>Toplam</th>
+    html = `<div class="report-table-wrap"><table class="report-table"><thead><tr>
+      <th>Ürün</th>${depotIds.map(id => `<th>${escapeHtml(depots[id])}</th>`).join('')}<th>Toplam</th>
     </tr></thead><tbody>`;
     Object.keys(grouped).sort().forEach(grup => {
-      html += `<tr class="grp"><td colspan="${depotIds.length + 2}">${grup}</td></tr>`;
+      html += `<tr class="grp"><td colspan="${depotIds.length + 2}">${escapeHtml(grup)}</td></tr>`;
       grouped[grup].sort((a,b) => {
-        const pa = prodMap[a], pb = prodMap[b];
+        const pa = pm[a], pb = pm[b];
         return (pa?pa[1]:a).localeCompare(pb?pb[1]:b);
       }).forEach(k => {
-        const p = prodMap[k];
+        const p = pm[k];
         const name = p ? p[1] : k;
         const unit = p ? p[2] : '';
         let total = 0;
@@ -345,17 +545,16 @@ function renderReport() {
           total += v;
           return `<td>${v ? fmtNum(v) : '-'}</td>`;
         }).join('');
-        html += `<tr><td>${name} <span style="color:#999;font-weight:400;">(${unit})</span></td>${cells}<td class="tot">${fmtNum(total)}</td></tr>`;
+        html += `<tr><td>${escapeHtml(name)} <span style="color:#999;font-weight:400;">(${escapeHtml(unit)})</span></td>${cells}<td class="tot">${fmtNum(total)}</td></tr>`;
       });
     });
     html += `</tbody></table></div>`;
   }
-  app.innerHTML = html;
+  govde.innerHTML = html;
 }
 
 function exportReportCsv() {
-  const prodMap = {};
-  PRODUCTS.forEach(p => prodMap[p[0]] = p);
+  const pm = prodMap();
   const depotIds = Object.keys(depots);
 
   const allCodes = new Set();
@@ -363,14 +562,14 @@ function exportReportCsv() {
     if ((stock[id][k] || 0) !== 0) allCodes.add(k);
   }));
   const codes = [...allCodes].sort((a,b) => {
-    const pa = prodMap[a], pb = prodMap[b];
+    const pa = pm[a], pb = pm[b];
     return (pa?pa[1]:a).localeCompare(pb?pb[1]:b);
   });
 
   const headers = ['Kod','Ürün Adı','Birim','Grup', ...depotIds.map(id => depots[id]), 'Toplam'];
   const rows = [headers];
   codes.forEach(k => {
-    const p = prodMap[k];
+    const p = pm[k];
     const name = p ? p[1] : k;
     const unit = p ? p[2] : '';
     const grup = p ? p[3] : '';
@@ -400,38 +599,201 @@ function exportReportCsv() {
   URL.revokeObjectURL(url);
 }
 
+let gecmisDepo = 'tumu';
+let gecmisTur = 'tumu';
+let gecmisAralik = '30';   // '7' | '30' | 'tumu'
+
 function renderHistory() {
-  let html = `<div class="section-title">İşlem Geçmişi</div>`;
-  if (transactions.length === 0) {
-    html += `<div class="empty-state">Henüz işlem kaydı yok.</div>`;
-  } else {
-    const sorted = [...transactions].sort((a,b) => b.ts - a.ts);
-    sorted.slice(0, 100).forEach(tx => {
-      const d = new Date(tx.ts);
-      const dateStr = d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'});
-      let badge, desc;
-      if (tx.type === 'giris') {
-        badge = `<span class="tx-badge tx-giris">GİRİŞ</span>`;
-        desc = `${depots[tx.depotId] || tx.depotId}`;
-      } else if (tx.type === 'cikis') {
-        badge = `<span class="tx-badge tx-cikis">ÇIKIŞ</span>`;
-        desc = `${depots[tx.depotId] || tx.depotId}`;
-      } else {
-        badge = `<span class="tx-badge tx-transfer">TRANSFER</span>`;
-        desc = `${depots[tx.fromDepot] || tx.fromDepot} &rarr; ${depots[tx.toDepot] || tx.toDepot}`;
-      }
-      const pending = tx.localId && getQueue().some(q => q.localId === tx.localId);
-      html += `<div class="tx-row">
-        <div class="tx-top">${badge}<span style="font-size:13px;font-weight:700;">${fmtNum(tx.miktar)} ${tx.birim||''}</span></div>
-        <div class="tx-name">${tx.ad}</div>
-        <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+tx.note : ''}${pending ? ' &middot; <span style=\'color:#c62828;font-weight:600;\'>gönderiliyor...</span>' : ''}</div>
-      </div>`;
-    });
+  const depoSecenek = ['<option value="tumu">Tüm depolar</option>']
+    .concat(Object.keys(depots).map(id =>
+      `<option value="${escapeHtml(id)}"${gecmisDepo === id ? ' selected' : ''}>${escapeHtml(depots[id])}</option>`))
+    .join('');
+
+  const sec = (deger, mevcut, etiket) =>
+    `<option value="${deger}"${mevcut === deger ? ' selected' : ''}>${etiket}</option>`;
+
+  app.innerHTML =
+    `<div class="section-title">İşlem Geçmişi</div>` +
+    `<div class="filtre-satiri">
+      <select id="fDepo">${depoSecenek}</select>
+      <select id="fTur">
+        ${sec('tumu', gecmisTur, 'Tüm işlemler')}
+        ${sec('giris', gecmisTur, 'Giriş')}
+        ${sec('cikis', gecmisTur, 'Çıkış')}
+        ${sec('transfer', gecmisTur, 'Transfer')}
+      </select>
+      <select id="fAralik">
+        ${sec('7', gecmisAralik, 'Son 7 gün')}
+        ${sec('30', gecmisAralik, 'Son 30 gün')}
+        ${sec('tumu', gecmisAralik, 'Tümü')}
+      </select>
+    </div>` +
+    `<div id="historyBody"></div>`;
+
+  document.getElementById('fDepo').addEventListener('change', e => { gecmisDepo = e.target.value; renderHistoryBody(); });
+  document.getElementById('fTur').addEventListener('change', e => { gecmisTur = e.target.value; renderHistoryBody(); });
+  document.getElementById('fAralik').addEventListener('change', e => { gecmisAralik = e.target.value; renderHistoryBody(); });
+
+  renderHistoryBody();
+}
+
+function gecmisiSuz() {
+  const simdi = Date.now();
+  const sinir = gecmisAralik === 'tumu' ? 0 : simdi - Number(gecmisAralik) * 86400000;
+
+  return transactions.filter(tx => {
+    if (tx.ts < sinir) return false;
+    if (gecmisTur !== 'tumu' && tx.type !== gecmisTur) return false;
+    if (gecmisDepo !== 'tumu') {
+      const ilgili = tx.type === 'transfer'
+        ? (tx.fromDepot === gecmisDepo || tx.toDepot === gecmisDepo)
+        : tx.depotId === gecmisDepo;
+      if (!ilgili) return false;
+    }
+    return true;
+  }).sort((a, b) => b.ts - a.ts);
+}
+
+function renderHistoryBody() {
+  const govde = document.getElementById('historyBody');
+  if (!govde) return;
+  const kayitlar = gecmisiSuz();
+
+  if (kayitlar.length === 0) {
+    govde.innerHTML = `<div class="empty-state">${
+      transactions.length === 0 ? 'Henüz işlem kaydı yok.' : 'Bu filtrelere uyan işlem yok.'
+    }</div>`;
+    return;
   }
+
+  let html = '';
+  kayitlar.slice(0, 100).forEach(tx => {
+    const d = new Date(tx.ts);
+    const dateStr = d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'});
+    let badge, desc;
+    if (tx.type === 'giris') {
+      badge = `<span class="tx-badge tx-giris">GİRİŞ</span>`;
+      desc = `${escapeHtml(depots[tx.depotId] || tx.depotId)}`;
+    } else if (tx.type === 'cikis') {
+      badge = `<span class="tx-badge tx-cikis">ÇIKIŞ</span>`;
+      desc = `${escapeHtml(depots[tx.depotId] || tx.depotId)}`;
+    } else {
+      badge = `<span class="tx-badge tx-transfer">TRANSFER</span>`;
+      desc = `${escapeHtml(depots[tx.fromDepot] || tx.fromDepot)} &rarr; ${escapeHtml(depots[tx.toDepot] || tx.toDepot)}`;
+    }
+    const pending = tx.localId && getQueue().some(q => q.localId === tx.localId);
+    const geriAlmaKaydi = !!tx.revertOf;
+    const dugme = (!geriAlmaKaydi && !tx.reverted && tx.id && !pending)
+      ? `<button class="tx-undo" onclick="geriAl('${escapeHtml(tx.id)}')">Geri al</button>`
+      : '';
+    const isaret = tx.reverted ? ' <span class="tx-badge tx-revert-badge">GERİ ALINDI</span>' : '';
+    html += `<div class="tx-row${tx.reverted ? ' tx-reverted' : ''}">
+      <div class="tx-top">${badge}${isaret}<span style="font-size:13px;font-weight:700;">${fmtNum(tx.miktar)} ${escapeHtml(tx.birim||'')}</span></div>
+      <div class="tx-name">${escapeHtml(tx.ad)}</div>
+      <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+escapeHtml(tx.note) : ''}${pending ? ' &middot; <span style=\'color:#c62828;font-weight:600;\'>gönderiliyor...</span>' : ''}</div>
+      ${dugme}
+    </div>`;
+  });
+  govde.innerHTML = html;
+}
+
+function renderSettings() {
+  let html = `<div class="section-title">Ayarlar</div>`;
+
+  html += `<div class="ayar-blok"><h3>Depolar</h3>`;
+  Object.keys(depots).forEach(id => {
+    const dolu = Object.values(stock[id] || {}).some(v => v !== 0);
+    html += `<div class="ayar-satir">
+      <span>${escapeHtml(depots[id])}</span>
+      <button class="ayar-btn tehlike" ${dolu ? 'disabled style="opacity:.4"' : ''} onclick="depoSil('${escapeHtml(id)}')">${dolu ? 'Dolu' : 'Sil'}</button>
+    </div>`;
+  });
+  html += `<div class="ayar-satir"><span></span>
+    <button class="ayar-btn" onclick="depoEkle()">+ Depo Ekle</button></div>`;
+  html += `<div class="ayar-not">Stoğu boş olmayan depo silinemez — silinirse geçmiş kayıtları anlamsız kalır.</div>`;
+  html += `</div>`;
+
+  const ozelSayi = Object.keys(customProducts).length;
+  html += `<div class="ayar-blok"><h3>Ürünler</h3>
+    <div class="ayar-satir"><span>Katalog</span><span style="color:#888">${PRODUCTS.length} ürün</span></div>
+    <div class="ayar-satir"><span>Eklenen</span><span style="color:#888">${ozelSayi} ürün</span></div>
+    <div class="ayar-satir"><span></span>
+      <button class="ayar-btn" onclick="urunEkle()">+ Ürün Ekle</button></div>
+  </div>`;
+
+  html += `<div class="ayar-blok"><h3>Güvenlik</h3>
+    <div class="ayar-satir"><span>Giriş PIN'i</span>
+      <button class="ayar-btn" onclick="pinDegistir()">${pinOzeti ? 'Değiştir' : 'Belirle'}</button></div>
+    <div class="ayar-not">PIN, telefonu eline alan birinin stok kayıtlarını değiştirmesini
+    engeller. Veritabanı adresini bilen biri uygulamayı hiç kullanmadan veriye
+    erişebilir — bunun için Firebase kimlik doğrulaması gerekir.</div>
+  </div>`;
+
+  html += `<div class="ayar-blok"><h3>Cihaz</h3>
+    <div class="ayar-satir"><span>PIN hatırlama</span>
+      <button class="ayar-btn tehlike" onclick="localStorage.removeItem('pin_dogrulandi'); location.reload();">Sıfırla</button></div>
+  </div>`;
+
+  html += `<div class="ayar-blok"><h3>Uygulama</h3>
+    <div class="ayar-satir"><span>Sürüm</span><span style="color:#888">${SURUM}</span></div>
+    <div class="ayar-satir"><span>Güncelleme</span>
+      <button class="ayar-btn" onclick="guncellemeDenetle()">Denetle</button></div>
+  </div>`;
+
   app.innerHTML = html;
 }
 
+function depoEkle() {
+  const ad = (prompt('Yeni deponun adı:') || '').trim();
+  if (!ad) return;
+  if (Object.values(depots).some(d => d.toLowerCase() === ad.toLowerCase())) {
+    alert('Bu adda bir depo zaten var.');
+    return;
+  }
+  const id = 'depo_' + Date.now();
+  depots[id] = ad;
+  if (!stock[id]) stock[id] = {};
+  db.ref('depots/' + id).set(ad);
+  saveCache();
+  render();
+}
+
+function depoSil(id) {
+  if (DEFAULT_DEPOTS[id]) { alert('Varsayılan depolar silinemez.'); return; }
+  const dolu = Object.values(stock[id] || {}).some(v => v !== 0);
+  if (dolu) { alert('Bu depoda stok var. Önce stoğu boşalt ya da başka depoya aktar.'); return; }
+  if (!confirm(`"${depots[id]}" deposu silinsin mi?`)) return;
+  delete depots[id];
+  delete stock[id];
+  db.ref('depots/' + id).remove();
+  db.ref('stock/' + id).remove();
+  saveCache();
+  render();
+}
+
+function urunEkle() {
+  const kod = (prompt('Ürün kodu (örn: ICB09000001):') || '').trim().toUpperCase();
+  if (!kod) return;
+  if (!/^[A-Z0-9_-]{3,32}$/.test(kod)) { alert('Ürün kodu yalnızca büyük harf, rakam, - ve _ içerebilir (3-32 karakter).'); return; }
+  if (prodMap()[kod]) { alert('Bu kod zaten kayıtlı: ' + prodMap()[kod][1]); return; }
+
+  const ad = (prompt('Ürün adı:') || '').trim();
+  if (!ad) return;
+
+  const birim = (prompt('Birim — bot / kol / fic / lt:', 'bot') || '').trim().toLowerCase();
+  if (!['bot', 'kol', 'fic', 'lt'].includes(birim)) { alert('Birim bot, kol, fic ya da lt olmalı.'); return; }
+
+  const gruplar = [...new Set(Object.values(prodMap()).map(p => p[3]))].sort();
+  const grup = (prompt('Grup:\n\n' + gruplar.join('\n'), gruplar[0]) || '').trim().toUpperCase();
+  if (!grup) return;
+
+  db.ref('customProducts/' + kod).set({ ad, birim, grup });
+  alert(`"${ad}" eklendi.`);
+}
+
 function render() {
+  const hs = document.getElementById('header-sub');
+  if (hs) hs.textContent = Object.keys(depots).length + ' depo · Alibey Club';
   if (currentTab === 'depolar') {
     if (openDepotDetail) renderDepotDetail();
     else renderDepotList();
@@ -439,7 +801,30 @@ function render() {
     renderReport();
   } else if (currentTab === 'gecmis') {
     renderHistory();
+  } else if (currentTab === 'ayarlar') {
+    renderSettings();
   }
+}
+
+let renderBekliyor = false;
+
+function yaziliyorMu() {
+  const e = document.activeElement;
+  return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.tagName === 'SELECT');
+}
+
+function scheduleRender() {
+  if (document.getElementById('modalOverlay') || yaziliyorMu()) {
+    renderBekliyor = true;
+    return;
+  }
+  render();
+}
+
+function bekleyenRenderiBosalt() {
+  if (!renderBekliyor) return;
+  renderBekliyor = false;
+  render();
 }
 
 // Nav
@@ -449,9 +834,12 @@ document.querySelectorAll('nav.bottom button').forEach(btn => {
     btn.classList.add('active');
     currentTab = btn.dataset.tab;
     openDepotDetail = null;
+    depotSearchQuery = '';
     render();
   });
 });
+
+document.addEventListener('focusout', bekleyenRenderiBosalt);
 
 // ===== Yerel önbellek (internet olmadan da açılabilsin) =====
 function loadCache() {
@@ -459,9 +847,11 @@ function loadCache() {
     const d = localStorage.getItem('cache_depots');
     const s = localStorage.getItem('cache_stock');
     const t = localStorage.getItem('cache_tx');
+    const c = localStorage.getItem('cache_custom');
     if (d) depots = {...DEFAULT_DEPOTS, ...JSON.parse(d)};
     if (s) stock = JSON.parse(s);
     if (t) transactions = JSON.parse(t);
+    if (c) customProducts = JSON.parse(c);
   } catch(e) {}
 }
 function saveCache() {
@@ -469,10 +859,25 @@ function saveCache() {
     localStorage.setItem('cache_depots', JSON.stringify(depots));
     localStorage.setItem('cache_stock', JSON.stringify(stock));
     localStorage.setItem('cache_tx', JSON.stringify(transactions.slice(0,300)));
+    localStorage.setItem('cache_custom', JSON.stringify(customProducts));
   } catch(e) {}
 }
 loadCache();
 render();
+
+if (!cihazDogrulanmisMi()) {
+  if (pinOzeti) {
+    pinEkraniniGoster('giris');
+  } else {
+    // Onbellekte ozet yok - Firebase'den gelmesini kisa sure bekle
+    db.ref('settings/pinHash').once('value').then(snap => {
+      if (cihazDogrulanmisMi()) return;
+      pinEkraniniGoster(snap.val() ? 'giris' : 'kurulum');
+    }).catch(() => {
+      // Cevrimdisi ve onbellekte ozet yok - kilitleme, uygulamayi ac
+    });
+  }
+}
 
 // ===== Bekleyen işlem kuyruğu (internet yokken kaydedilenler) =====
 function getQueue() {
@@ -548,21 +953,30 @@ db.ref('depots').on('value', snap => {
   const val = snap.val();
   if (val) depots = {...DEFAULT_DEPOTS, ...val};
   saveCache();
-  render();
+  scheduleRender();
 });
 
 db.ref('stock').on('value', snap => {
   const val = snap.val() || {};
-  stock = { ana: val.ana||{}, yan1: val.yan1||{}, yan2: val.yan2||{} };
+  const yeni = {};
+  Object.keys(depots).forEach(id => { yeni[id] = val[id] || {}; });
+  Object.keys(val).forEach(id => { if (!yeni[id]) yeni[id] = val[id] || {}; });
+  stock = yeni;
   saveCache();
-  render();
+  scheduleRender();
 });
 
 db.ref('transactions').limitToLast(300).on('value', snap => {
   const val = snap.val() || {};
   transactions = Object.keys(val).map(k => ({ id: k, ...val[k] }));
   saveCache();
-  render();
+  scheduleRender();
+});
+
+db.ref('customProducts').on('value', snap => {
+  customProducts = snap.val() || {};
+  saveCache();
+  scheduleRender();
 });
 
 // ===== Modal: yeni işlem =====
@@ -570,15 +984,38 @@ let txType = 'giris';
 let selectedProduct = null;
 let quickDepotContext = null; // ürün satırından tıklanınca hangi depo bağlamında açıldığı
 
-document.getElementById('fabBtn').addEventListener('click', () => { quickDepotContext = null; openModal(); });
+document.getElementById('fabBtn').addEventListener('click', () => {
+  quickDepotContext = openDepotDetail || null;
+  openModal();
+});
+
+function overlayAc(icHtml) {
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.id = 'modalOverlay';
+  overlay.innerHTML = icHtml;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  history.pushState({ modalAcik: true }, '');
+  return overlay;
+}
+
+function overlayKaldir() {
+  const o = document.getElementById('modalOverlay');
+  if (o) o.remove();
+  quickDepotContext = null;
+  bekleyenRenderiBosalt();
+}
+
+window.addEventListener('popstate', () => {
+  if (document.getElementById('modalOverlay')) { overlayKaldir(); return; }
+  if (openDepotDetail) { depotListesineDon(); }
+});
 
 function openModal() {
   txType = 'giris';
   selectedProduct = null;
-  const overlay = document.createElement('div');
-  overlay.className = 'overlay';
-  overlay.id = 'modalOverlay';
-  overlay.innerHTML = `
+  overlayAc(`
     <div class="modal">
       <h2>Yeni İşlem</h2>
       <div class="type-tabs">
@@ -595,7 +1032,8 @@ function openModal() {
       <div id="selectedProdBox"></div>
 
       <label>Miktar</label>
-      <input type="number" id="miktarInput" placeholder="Örn: 12" min="0" step="0.01">
+      <input type="number" id="miktarInput" placeholder="Örn: 12" min="0" step="0.01"
+             inputmode="decimal" enterkeyhint="done">
 
       <label>Not (opsiyonel)</label>
       <input type="text" id="noteInput" placeholder="Örn: tedarikçi adı, sebep...">
@@ -605,26 +1043,22 @@ function openModal() {
       <button class="save-btn" onclick="saveTransaction()">Kaydet</button>
       <button class="cancel-btn" onclick="closeModal()">Vazgeç</button>
     </div>
-  `;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  `);
   renderDepotFields();
+  if (quickDepotContext) applyQuickDepotPreset(quickDepotContext);
 }
 
 function quickTap(depotId, kod) {
-  const p = PRODUCTS.find(x => x[0] === kod);
+  const p = prodMap()[kod];
   if (!p) return;
   txType = 'giris';
   selectedProduct = p;
   quickDepotContext = depotId;
   const currentQty = (stock[depotId] && stock[depotId][kod]) || 0;
-  const overlay = document.createElement('div');
-  overlay.className = 'overlay';
-  overlay.id = 'modalOverlay';
-  overlay.innerHTML = `
+  overlayAc(`
     <div class="modal">
-      <h2>${p[1]}</h2>
-      <div style="font-size:12px;color:#999;margin:-8px 0 14px;">${p[0]} &middot; ${depots[depotId]} içinde şu an: <b>${fmtNum(currentQty)} ${p[2]}</b></div>
+      <h2>${escapeHtml(p[1])}</h2>
+      <div style="font-size:12px;color:#999;margin:-8px 0 14px;">${escapeHtml(p[0])} &middot; ${escapeHtml(depots[depotId])} içinde şu an: <b>${fmtNum(currentQty)} ${escapeHtml(p[2])}</b></div>
       <div class="type-tabs">
         <button id="typeGiris" class="sel-giris" onclick="setType('giris')">Giriş</button>
         <button id="typeCikis" onclick="setType('cikis')">Çıkış</button>
@@ -634,7 +1068,8 @@ function quickTap(depotId, kod) {
       <div id="depotFields"></div>
 
       <label>Miktar</label>
-      <input type="number" id="miktarInput" placeholder="Örn: 12" min="0" step="0.01">
+      <input type="number" id="miktarInput" placeholder="Örn: 12" min="0" step="0.01"
+             inputmode="decimal" enterkeyhint="done">
 
       <label>Not (opsiyonel)</label>
       <input type="text" id="noteInput" placeholder="Örn: tedarikçi adı, sebep...">
@@ -644,9 +1079,7 @@ function quickTap(depotId, kod) {
       <button class="save-btn" onclick="saveTransaction()">Kaydet</button>
       <button class="cancel-btn" onclick="closeModal()">Vazgeç</button>
     </div>
-  `;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  `);
   renderDepotFields();
   applyQuickDepotPreset(depotId);
   setTimeout(() => { const m = document.getElementById('miktarInput'); if (m) m.focus(); }, 60);
@@ -668,9 +1101,11 @@ function applyQuickDepotPreset(depotId) {
 }
 
 function closeModal() {
-  const o = document.getElementById('modalOverlay');
-  if (o) o.remove();
-  quickDepotContext = null;
+  if (history.state && history.state.modalAcik) {
+    history.back();   // popstate tetiklenir, overlayKaldir cagirilir
+  } else {
+    overlayKaldir();
+  }
 }
 
 function setType(t) {
@@ -685,25 +1120,22 @@ function setType(t) {
 
 function renderDepotFields() {
   const box = document.getElementById('depotFields');
-  const opts = Object.keys(depots).map(id => `<option value="${id}">${depots[id]}</option>`).join('');
+  const secenek = (id, secili) =>
+    `<option value="${escapeHtml(id)}"${secili ? ' selected' : ''}>${escapeHtml(depots[id])}</option>`;
+  const idler = Object.keys(depots);
+
   if (txType === 'transfer') {
+    const varsayilanKaynak = idler.find(x => x !== 'ana') || idler[0];
     box.innerHTML = `
       <label>Nereden</label>
-      <select id="fromDepot">${opts}</select>
+      <select id="fromDepot">${idler.map(id => secenek(id, id === varsayilanKaynak)).join('')}</select>
       <label>Nereye</label>
-      <select id="toDepot">${opts}</select>
+      <select id="toDepot">${idler.map(id => secenek(id, id === 'ana')).join('')}</select>
     `;
-    // default: yan -> ana
-    setTimeout(() => {
-      const to = document.getElementById('toDepot');
-      if (to) to.value = 'ana';
-      const from = document.getElementById('fromDepot');
-      if (from) from.value = 'yan1';
-    }, 0);
   } else {
     box.innerHTML = `
       <label>Depo</label>
-      <select id="singleDepot">${opts}</select>
+      <select id="singleDepot">${idler.map(id => secenek(id, false)).join('')}</select>
     `;
   }
 }
@@ -712,22 +1144,22 @@ function searchProduct(q) {
   const acList = document.getElementById('acList');
   q = q.trim().toLowerCase();
   if (q.length < 2) { acList.innerHTML = ''; return; }
-  const matches = PRODUCTS.filter(p =>
-    p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q)
-  ).slice(0, 20);
-  acList.innerHTML = matches.map(p =>
-    `<div onclick='pickProduct("${p[0]}")'>${p[1]} <div class="ac-code">${p[0]} · ${p[2]}</div></div>`
+  const eslesenler = Object.values(prodMap())
+    .filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q))
+    .slice(0, 20);
+  acList.innerHTML = eslesenler.map(p =>
+    `<div onclick='pickProduct("${escapeHtml(p[0])}")'>${escapeHtml(p[1])}<div class="ac-code">${escapeHtml(p[0])} · ${escapeHtml(p[2])}</div></div>`
   ).join('');
 }
 
 function pickProduct(kod) {
-  const p = PRODUCTS.find(x => x[0] === kod);
+  const p = prodMap()[kod];
   selectedProduct = p;
   document.getElementById('acList').innerHTML = '';
   document.getElementById('prodSearch').value = '';
   document.getElementById('selectedProdBox').innerHTML =
     `<div style="background:#eef2fb;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:13px;">
-      Seçilen: <b>${p[1]}</b> (${p[0]}, ${p[2]})
+      Seçilen: <b>${escapeHtml(p[1])}</b> (${escapeHtml(p[0])}, ${escapeHtml(p[2])})
       <span onclick="clearProduct()" style="float:right;color:#c62828;cursor:pointer;">&times;</span>
     </div>`;
 }
@@ -735,6 +1167,20 @@ function pickProduct(kod) {
 function clearProduct() {
   selectedProduct = null;
   document.getElementById('selectedProdBox').innerHTML = '';
+}
+
+function stokYeterliMi(depoId, kod, miktar) {
+  const mevcut = (stock[depoId] && stock[depoId][kod]) || 0;
+  return { yeterli: miktar <= mevcut, mevcut };
+}
+
+function stokUyarisiGec(depoId, kod, miktar, birim) {
+  const { yeterli, mevcut } = stokYeterliMi(depoId, kod, miktar);
+  if (yeterli) return true;
+  return confirm(
+    `Stok yetersiz.\n\n${depots[depoId] || depoId} içinde şu an ${fmtNum(mevcut)} ${birim} var, ` +
+    `${fmtNum(miktar)} ${birim} çıkışı yapılmak isteniyor.\n\nYine de kaydedilsin mi?`
+  );
 }
 
 function saveTransaction() {
@@ -767,11 +1213,13 @@ function saveTransaction() {
       errBox.style.display = 'block';
       return;
     }
+    if (!stokUyarisiGec(from, kod, miktar, birim)) return;
     txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId };
     applyDeltaLocal(from, kod, -miktar);
     applyDeltaLocal(to, kod, miktar);
   } else {
     const depotId = document.getElementById('singleDepot').value;
+    if (txType === 'cikis' && !stokUyarisiGec(depotId, kod, miktar, birim)) return;
     txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId };
     const delta = txType === 'giris' ? miktar : -miktar;
     applyDeltaLocal(depotId, kod, delta);
@@ -792,9 +1240,89 @@ function saveTransaction() {
   render();
 }
 
+function geriAl(id) {
+  const tx = transactions.find(t => t.id === id);
+  if (!tx) return;
+  if (tx.reverted) { alert('Bu işlem zaten geri alınmış.'); return; }
+
+  const ozet = tx.type === 'transfer'
+    ? `${depots[tx.fromDepot] || tx.fromDepot} → ${depots[tx.toDepot] || tx.toDepot}`
+    : (depots[tx.depotId] || tx.depotId);
+  if (!confirm(`Geri alınacak:\n\n${tx.ad}\n${fmtNum(tx.miktar)} ${tx.birim || ''} · ${ozet}\n\nOnaylıyor musun?`)) return;
+
+  const simdi = Date.now();
+  const localId = 'local_' + simdi + '_' + Math.random().toString(36).slice(2, 8);
+  let ters;
+
+  if (tx.type === 'transfer') {
+    ters = { type: 'transfer', fromDepot: tx.toDepot, toDepot: tx.fromDepot,
+             kod: tx.kod, ad: tx.ad, birim: tx.birim, miktar: tx.miktar,
+             note: 'Geri alma', ts: simdi, localId, revertOf: id };
+    applyDeltaLocal(tx.toDepot, tx.kod, -tx.miktar);
+    applyDeltaLocal(tx.fromDepot, tx.kod, tx.miktar);
+  } else {
+    const tersTur = tx.type === 'giris' ? 'cikis' : 'giris';
+    ters = { type: tersTur, depotId: tx.depotId,
+             kod: tx.kod, ad: tx.ad, birim: tx.birim, miktar: tx.miktar,
+             note: 'Geri alma', ts: simdi, localId, revertOf: id };
+    applyDeltaLocal(tx.depotId, tx.kod, tersTur === 'giris' ? tx.miktar : -tx.miktar);
+  }
+
+  tx.reverted = true;
+  db.ref('transactions/' + id + '/reverted').set(true);
+
+  transactions.unshift(ters);
+  saveCache();
+
+  const q = getQueue();
+  q.push(ters);
+  setQueue(q);
+  updateOfflineBar();
+  trySyncQueue();
+  render();
+}
+
 function round2(n) { return Math.round(n * 100) / 100; }
 
-render();
+// ===== Service worker kaydi ve guncelleme akisi =====
+let bekleyenSw = null;
+
+function guncellemeyiUygula() {
+  if (!bekleyenSw) { location.reload(); return; }
+  bekleyenSw.postMessage('HEMEN_GEC');
+}
+
+async function guncellemeDenetle() {
+  if (!('serviceWorker' in navigator)) { alert('Bu tarayıcı güncelleme denetimini desteklemiyor.'); return; }
+  const kayit = await navigator.serviceWorker.getRegistration();
+  if (!kayit) { alert('Uygulama henüz kurulmamış.'); return; }
+  await kayit.update();
+  alert(bekleyenSw ? 'Yeni sürüm indirildi. Yenile düğmesine bas.' : 'Uygulama güncel.');
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(kayit => {
+      kayit.addEventListener('updatefound', () => {
+        const yeni = kayit.installing;
+        if (!yeni) return;
+        yeni.addEventListener('statechange', () => {
+          if (yeni.state === 'installed' && navigator.serviceWorker.controller) {
+            bekleyenSw = yeni;
+            document.getElementById('guncellemeBari').style.display = 'flex';
+          }
+        });
+      });
+    }).catch(e => console.warn('sw kaydedilemedi', e));
+
+    let yenilendi = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (yenilendi) return;
+      yenilendi = true;
+      location.reload();
+    });
+  });
+}
 </script>
 </body>
 </html>
