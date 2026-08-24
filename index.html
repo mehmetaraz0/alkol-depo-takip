@@ -336,7 +336,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v16';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v17';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -394,7 +394,8 @@ function openDepot(id) {
 function renameDepot(id, val) {
   val = val.trim() || DEFAULT_DEPOTS[id] || depots[id];
   depots[id] = val;
-  db.ref('depots/' + id).set(val);
+  db.ref('depots/' + id).set(val)
+    .catch(e => console.warn('depo adi sunucuya yazilamadi', e));
 }
 
 function renderDepotDetail() {
@@ -793,7 +794,8 @@ function depoEkle() {
   const id = 'depo_' + Date.now();
   depots[id] = ad;
   if (!stock[id]) stock[id] = {};
-  db.ref('depots/' + id).set(ad);
+  db.ref('depots/' + id).set(ad)
+    .catch(e => console.warn('yeni depo sunucuya yazilamadi', e));
   saveCache();
   render();
 }
@@ -805,8 +807,10 @@ function depoSil(id) {
   if (!confirm(`"${depots[id]}" deposu silinsin mi?`)) return;
   delete depots[id];
   delete stock[id];
-  db.ref('depots/' + id).remove();
-  db.ref('stock/' + id).remove();
+  db.ref('depots/' + id).remove()
+    .catch(e => console.warn('depo sunucudan silinemedi', e));
+  db.ref('stock/' + id).remove()
+    .catch(e => console.warn('depo stogu sunucudan silinemedi', e));
   saveCache();
   render();
 }
@@ -827,7 +831,8 @@ function urunEkle() {
   const grup = (prompt('Grup:\n\n' + gruplar.join('\n'), gruplar[0]) || '').trim().toUpperCase();
   if (!grup) return;
 
-  db.ref('customProducts/' + kod).set({ ad, birim, grup });
+  db.ref('customProducts/' + kod).set({ ad, birim, grup })
+    .catch(e => console.warn('yeni urun sunucuya yazilamadi', e));
   alert(`"${ad}" eklendi.`);
 }
 
@@ -1325,7 +1330,22 @@ function kuyruguIsle(kilit) {
     delete rec._toUygulandi;
     delete rec._kaydedildi;
     delete rec._hataSayisi;   // yerel yeniden deneme sayaci Firebase semasina sizmasin
-    db.ref('transactions').push(rec).then(() => { guncelleKuyrukOgesi({ _kaydedildi: true }); bitir(); }).catch(hataOldu);
+
+    const yeniKayitGonder = () =>
+      db.ref('transactions').push(rec).then(() => { guncelleKuyrukOgesi({ _kaydedildi: true }); bitir(); }).catch(hataOldu);
+
+    // Ilk denemede dogrudan gonder — ekstra sorgu maliyeti yok. En az bir
+    // basarisiz deneme (_hataSayisi > 0) sonrasindaysa, push sunucuya ulasip
+    // yanit kaybolmus olabilir: tekrar push etmeden once ayni localId'yle bir
+    // kayit zaten var mi diye sorulur. Varsa kopya olusturulmaz, dogrudan
+    // tamamlanmis sayilir.
+    if (!next._hataSayisi) { yeniKayitGonder(); return; }
+    db.ref('transactions').orderByChild('localId').equalTo(next.localId).limitToFirst(1).once('value')
+      .then(snap => {
+        if (snap.exists()) { guncelleKuyrukOgesi({ _kaydedildi: true }); bitir(); }
+        else { yeniKayitGonder(); }
+      })
+      .catch(hataOldu);
   };
 
   // M1: sevk blogundan kacan SENKRON bir istisna, kilidi kalici true birakip
