@@ -336,7 +336,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v17';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v18';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -933,7 +933,15 @@ function saveCache() {
     localStorage.setItem('cache_stock', JSON.stringify(stock));
     localStorage.setItem('cache_tx', JSON.stringify(transactions.slice(0,300)));
     localStorage.setItem('cache_custom', JSON.stringify(customProducts));
-  } catch(e) {}
+  } catch(e) {
+    // Onbellek yazilamadi - ayni localStorage kotasini paylasan kuyruk da
+    // yazamayacak demektir. Sessizce yutmak yerine zaten var olan "cihaz
+    // depolamasi dolu" mekanizmasi tetiklenir: kullanici taniyor oldugu ayni
+    // kirmizi seridi gorur, senkronizasyon durur (kuyrukYazilabilirMi() zaten
+    // ayni sebepten calismayacakti, bu yalnizca daha erken haber verir).
+    console.warn('onbellek yazilamadi', e);
+    senkronizasyonuDurdur();
+  }
 }
 loadCache();
 render();
@@ -1696,6 +1704,27 @@ function geriAl(id) {
     : (depots[tx.depotId] || tx.depotId);
   if (!confirm(`Geri alınacak:\n\n${tx.ad}\n${fmtNum(tx.miktar)} ${tx.birim || ''} · ${ozet}\n\nOnaylıyor musun?`)) return;
 
+  // geriAlinmisMi() yalnizca son 300 kayidi ve BU cihazin kuyrugunu goruyor.
+  // Ters kayit baska bir cihazdan geldiyse ya da bu islemin ustunden 300'den
+  // fazla kayit gectiyse yerelde gorunmeyebilir (teorik, ama olasi). Kalici
+  // etki dogurmadan hemen once, pencereden bagimsiz tanimlayici bir sorgu
+  // atilir. Cevrimdisiyse (sorgu hic cozulmez/reddedilirse) yerel karara
+  // guvenilip devam edilir — offline-first tasarimla tutarli.
+  db.ref('transactions').orderByChild('revertOf').equalTo(id).limitToFirst(1).once('value')
+    .then(snap => {
+      if (snap.exists()) {
+        tx.reverted = true;
+        saveCache();
+        alert('Bu işlem zaten geri alınmış.');
+        render();
+        return;
+      }
+      geriAlDevam(tx, id);
+    })
+    .catch(() => geriAlDevam(tx, id));
+}
+
+function geriAlDevam(tx, id) {
   const simdi = Date.now();
   const localId = 'local_' + simdi + '_' + Math.random().toString(36).slice(2, 8);
   let ters;
