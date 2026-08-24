@@ -278,9 +278,15 @@ function pinEkraniniGoster(kip) {
     const ozet = await sha256(kod);
 
     if (kurulum) {
-      await db.ref('settings/pinHash').set(ozet);
+      // RTDB'de set() sozu SUNUCU ONAYI gelince cozulur; cevrimdisiyken yazma
+      // yerel olarak uygulanir ama soz asili kalir. Beklenirse ekrani kapatan
+      // satirlara hic ulasilamaz ve kurulum ekrani kalici kilitlenir — internetin
+      // olmamasi bu uygulamanin normal calisma kosulu. Once yerel durum, sonra
+      // beklemeden ates-unut: Firebase baglanti gelince kendiliginden gonderir.
       pinOzeti = ozet;
       localStorage.setItem('cache_pin_hash', ozet);
+      db.ref('settings/pinHash').set(ozet)
+        .catch(e => console.warn('PIN sunucuya yazilamadi', e));
     } else if (ozet !== pinOzeti) {
       hata.textContent = 'PIN hatalı.';
       girdi.value = '';
@@ -306,10 +312,13 @@ async function pinDegistir() {
   const yeni = (prompt('Yeni PIN (4 rakam):') || '').trim();
   if (!/^\d{4}$/.test(yeni)) { alert('PIN 4 rakam olmalı.'); return; }
   const ozet = await sha256(yeni);
-  await db.ref('settings/pinHash').set(ozet);
+  // Cevrimdisiyken set() sozu cozulmez; beklenirse "PIN güncellendi" mesaji hic
+  // cikmaz ve fonksiyon sessizce donar. Once yerel durum, sonra ates-unut.
   pinOzeti = ozet;
   localStorage.setItem('cache_pin_hash', ozet);
   localStorage.setItem('pin_dogrulandi', String(Date.now()));
+  db.ref('settings/pinHash').set(ozet)
+    .catch(e => console.warn('PIN sunucuya yazilamadi', e));
   alert('PIN güncellendi.');
 }
 
@@ -327,7 +336,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v14';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v16';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -362,9 +371,9 @@ function renderDepotList() {
     const items = stock[id] || {};
     const codes = Object.keys(items).filter(k => items[k] > 0);
     const totalUnits = codes.reduce((s,k) => s + (items[k]||0), 0);
-    html += `<div class="depot-card" onclick="openDepot('${escapeHtml(id)}')">
+    html += `<div class="depot-card" data-eylem="depoAc" data-depo="${escapeHtml(id)}">
       <div class="name" onclick="event.stopPropagation()">
-        <input value="${escapeHtml(depots[id])}" onchange="renameDepot('${escapeHtml(id)}', this.value)">
+        <input value="${escapeHtml(depots[id])}" data-eylem="depoAdiDegistir" data-depo="${escapeHtml(id)}">
       </div>
       <div class="stats">
         <div class="num">${codes.length}</div>
@@ -422,7 +431,7 @@ function renderDepotBody() {
     } else {
       eslesenler.forEach(p => {
         const adet = items[p[0]] || 0;
-        html += `<div class="prod-row" onclick="quickTap('${escapeHtml(id)}','${escapeHtml(p[0])}')">
+        html += `<div class="prod-row" data-eylem="urunDokun" data-depo="${escapeHtml(id)}" data-kod="${escapeHtml(p[0])}">
           <div class="info"><div class="pname">${escapeHtml(p[1])}</div><div class="pcode">${escapeHtml(p[0])}</div></div>
           <div class="pqty">${fmtNum(adet)}<div class="unit">${escapeHtml(p[2])}</div></div>
         </div>`;
@@ -451,7 +460,7 @@ function renderDepotBody() {
       .forEach(k => {
         const ad = pm[k] ? pm[k][1] : k;
         const birim = pm[k] ? pm[k][2] : '';
-        html += `<div class="prod-row" onclick="quickTap('${escapeHtml(id)}','${escapeHtml(k)}')">
+        html += `<div class="prod-row" data-eylem="urunDokun" data-depo="${escapeHtml(id)}" data-kod="${escapeHtml(k)}">
           <div class="info"><div class="pname">${escapeHtml(ad)}</div><div class="pcode">${escapeHtml(k)}</div></div>
           <div class="pqty">${fmtNum(items[k])}<div class="unit">${escapeHtml(birim)}</div></div>
         </div>`;
@@ -660,10 +669,32 @@ function gecmisiSuz() {
   }).sort((a, b) => b.ts - a.ts);
 }
 
+// Geri alinmislik yalnizca tx.reverted bayragindan turetilemez: bayrak .catch()'siz
+// tek bir set() yazmasina bagli ve RTDB web SDK'sinda bekleyen yazmalarin disk
+// kaliciligi yok. Cevrimdisi geri almada ters kayit dayanikli pending_queue'ya
+// yazilirken bayrak yalnizca bellekte kalir; uygulama kapanirsa bayrak kaybolur,
+// ters kayit sag kalir ve ayni islem ikinci kez geri alinabilir.
+// Bu yuzden gercek, ters kaydin kendisinden (revertOf) turetiliyor — ters kayit
+// dayanikli kuyruktan gectigi icin bu kendi kendini onarir.
+function geriAlinanIdKumesi() {
+  const kume = new Set();
+  transactions.forEach(t => { if (t && t.revertOf) kume.add(t.revertOf); });
+  getQueue().forEach(q => { if (q && q.revertOf) kume.add(q.revertOf); });
+  return kume;
+}
+
+function geriAlinmisMi(tx, kume) {
+  if (!tx) return false;
+  if (tx.reverted) return true;
+  if (!tx.id) return false;
+  return (kume || geriAlinanIdKumesi()).has(tx.id);
+}
+
 function renderHistoryBody() {
   const govde = document.getElementById('historyBody');
   if (!govde) return;
   const kayitlar = gecmisiSuz();
+  const tersKume = geriAlinanIdKumesi();
 
   if (kayitlar.length === 0) {
     govde.innerHTML = `<div class="empty-state">${
@@ -689,11 +720,12 @@ function renderHistoryBody() {
     }
     const pending = tx.localId && getQueue().some(q => q.localId === tx.localId);
     const geriAlmaKaydi = !!tx.revertOf;
-    const dugme = (!geriAlmaKaydi && !tx.reverted && tx.id && !pending)
-      ? `<button class="tx-undo" onclick="geriAl('${escapeHtml(tx.id)}')">Geri al</button>`
+    const geriAlinmis = geriAlinmisMi(tx, tersKume);
+    const dugme = (!geriAlmaKaydi && !geriAlinmis && tx.id && !pending)
+      ? `<button class="tx-undo" data-eylem="geriAl" data-tx="${escapeHtml(tx.id)}">Geri al</button>`
       : '';
-    const isaret = tx.reverted ? ' <span class="tx-badge tx-revert-badge">GERİ ALINDI</span>' : '';
-    html += `<div class="tx-row${tx.reverted ? ' tx-reverted' : ''}">
+    const isaret = geriAlinmis ? ' <span class="tx-badge tx-revert-badge">GERİ ALINDI</span>' : '';
+    html += `<div class="tx-row${geriAlinmis ? ' tx-reverted' : ''}">
       <div class="tx-top">${badge}${isaret}<span style="font-size:13px;font-weight:700;">${fmtNum(tx.miktar)} ${escapeHtml(tx.birim||'')}</span></div>
       <div class="tx-name">${escapeHtml(tx.ad)}</div>
       <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+escapeHtml(tx.note) : ''}${pending ? ' &middot; <span style=\'color:#c62828;font-weight:600;\'>gönderiliyor...</span>' : ''}</div>
@@ -711,7 +743,7 @@ function renderSettings() {
     const dolu = Object.values(stock[id] || {}).some(v => v !== 0);
     html += `<div class="ayar-satir">
       <span>${escapeHtml(depots[id])}</span>
-      <button class="ayar-btn tehlike" ${dolu ? 'disabled style="opacity:.4"' : ''} onclick="depoSil('${escapeHtml(id)}')">${dolu ? 'Dolu' : 'Sil'}</button>
+      <button class="ayar-btn tehlike" ${dolu ? 'disabled style="opacity:.4"' : ''} data-eylem="depoSil" data-depo="${escapeHtml(id)}">${dolu ? 'Dolu' : 'Sil'}</button>
     </div>`;
   });
   html += `<div class="ayar-satir"><span></span>
@@ -847,6 +879,34 @@ document.querySelectorAll('nav.bottom button').forEach(btn => {
   });
 });
 
+// ===== Delege edilmis olay dinleyicileri =====
+// Veri tasiyan isleyiciler satir ici onclick yerine data-* ozniteliklerinden okunur.
+// Satir ici isleyicide tarayici once HTML varliklarini cozer, cozulmus metin sonra JS
+// kaynagi olarak yorumlanir; boylece escapeHtml'in kapattigini JS seviyesi geri acardi.
+// dataset uzerinden okunan deger ise hicbir zaman koda donusmez.
+// Dinleyici document uzerinde: hem #app icerigi (depo kartlari, urun satirlari, gecmis,
+// ayarlar) hem de document.body'ye eklenen modal overlay (otomatik tamamlama) kapsanir.
+document.addEventListener('click', olay => {
+  const kaynak = olay.target;
+  if (!kaynak || typeof kaynak.closest !== 'function') return;
+  const hedef = kaynak.closest('[data-eylem]');
+  if (!hedef) return;
+  const eylem = hedef.dataset.eylem;
+  if (eylem === 'depoAc') openDepot(hedef.dataset.depo);
+  else if (eylem === 'urunDokun') quickTap(hedef.dataset.depo, hedef.dataset.kod);
+  else if (eylem === 'geriAl') geriAl(hedef.dataset.tx);
+  else if (eylem === 'depoSil') depoSil(hedef.dataset.depo);
+  else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
+});
+
+document.addEventListener('change', olay => {
+  const kaynak = olay.target;
+  if (!kaynak || typeof kaynak.closest !== 'function') return;
+  const hedef = kaynak.closest('[data-eylem="depoAdiDegistir"]');
+  if (!hedef) return;
+  renameDepot(hedef.dataset.depo, hedef.value);
+});
+
 document.addEventListener('focusout', bekleyenRenderiBosalt);
 
 // ===== Yerel önbellek (internet olmadan da açılabilsin) =====
@@ -891,12 +951,210 @@ if (!cihazDogrulanmisMi()) {
 function getQueue() {
   try { return JSON.parse(localStorage.getItem('pending_queue') || '[]'); } catch(e) { return []; }
 }
-function setQueue(q) { localStorage.setItem('pending_queue', JSON.stringify(q)); }
+// Basarisizligi ISTISNA yerine DONUS DEGERI ile bildirir: kuyruk ilerleme
+// isaretleri kalicilastirilamadiginda cagiran taraf bunu gorup senkronizasyonu
+// durdurabilsin diye.
+function setQueue(q) {
+  try {
+    localStorage.setItem('pending_queue', JSON.stringify(q));
+    return true;
+  } catch (e) {
+    return false;   // QuotaExceededError vb.
+  }
+}
+
+// Bu kuyruk turunda gerekecek EN BUYUK yazma kadar veriyi bir sonda anahtarina
+// yazip hemen siler; amac, hicbir Firebase mutasyonuna girmeden ONCE ilerleme
+// isaretini yazabilecegimizi bilmek.
+//
+// Neden gerekli: applyOne() once uygulaniyor, isaret sonra yaziliyor. Isaret
+// yazilamazsa Firebase islemi coktan uygulanmis olur. depolamaDoldu yalnizca
+// bellekte oldugu icin sayfa yenilenince false'a doner, kuyruk ogesi isaretsiz
+// durur ve ayni delta yeniden baslatmada IKINCI KEZ uygulanir — sessiz ve kalici
+// stok hatasi. Sonda, isaretleyemeyecegimiz bir deltayi hic uygulamamizi saglar.
+//
+// Neden sirayi ters cevirmedik: isareti applyOne'dan once yazmak, applyOne
+// basarisiz oldugunda deltanin tamamen kaybolmasina yol acar; ayni sekilde
+// _kaydedildi'yi push'tan once yazmak basarisiz push'u basarili sanmak olur.
+// "Uygula sonra isaretle" dogru sira; eksik olan, on kosulun sinanmasiydi.
+function kuyrukYazilabilirMi() {
+  const SONDA = 'pending_queue_sonda';
+  try {
+    const deneme = getQueue();
+    if (deneme.length) {
+      // bu turda eklenebilecek TUM isaretler basa konur: gercek yazmanin
+      // ihtiyac duyacagi boyutun ust siniri
+      deneme[0] = { ...deneme[0], _fromUygulandi: true, _toUygulandi: true,
+                    _stokUygulandi: true, _kaydedildi: true, _hataSayisi: 999999999 };
+    }
+    localStorage.setItem(SONDA, JSON.stringify(deneme));
+    return true;
+  } catch (e) {
+    return false;   // QuotaExceededError vb.
+  } finally {
+    try { localStorage.removeItem(SONDA); } catch (e2) {}
+  }
+}
+
+// Sonda yazmasi ile removeItem arasinda sekme kapanirsa anahtar kalir; kuyruk bir
+// daha hic dolmazsa hicbir sey onu silmez ve tam da kotayi zorlayan senaryoda bir
+// kuyruk kopyasi kadar yer yer. Acilista kosulsuz temizle.
+try { localStorage.removeItem('pending_queue_sonda'); } catch (e) {}
+
+// Kuyruk ilerleme isareti cihaza yazilamadi -> senkronizasyon durduruldu.
+// Korukorune yeniden deneme ayni deltayi Firebase'e tekrar tekrar uygular
+// (stok kacagi); veri yanlis olmaktansa senkronizasyon dursun ve gorunur olsun.
+let depolamaDoldu = false;
+
+function senkronizasyonuDurdur() {
+  depolamaDoldu = true;
+  updateOfflineBar();
+}
+
+// ===== Zehirli kuyruk ogesi: geri cekilme + gorunur uyari (I5) =====
+// Kuyrugun basindaki oge kalici olarak reddedilirse (kural degisikligi, yetki
+// kaybi, bozuk kayit) arkasindaki her sey bekler. Yerel stok applyDeltaLocal ile
+// coktan degistigi icin BU cihaz dogru sayiyi gosterir, sunucu ve diger cihazlar
+// eski sayida kalir — sessiz ve sinirsiz sapma.
+//
+// Karar: oge ASLA atilmaz (kayit silmek geri donussuzdur). Bunun yerine oge
+// bazinda ardisik hata sayilir, yeniden deneme araligi kademeli acilir ve esik
+// asilinca durum cubugu gecici mavi seritten AYIRT EDILEBILIR kalici bir uyariya
+// doner: hangi islemin takildigini adiyla soyler.
+const HATA_ESIGI = 5;             // bu kadar ardisik hatadan sonra kalici uyari
+const GERI_CEKILME_TABAN = 5000;  // ilk yeniden deneme araligi
+const GERI_CEKILME_UST_SINIR = 300000;  // 5 dk: sonsuza kadar buyumez, baglanti donunce makul surede toparlar
+
+function geriCekilmeSuresi(hataSayisi) {
+  const us = Math.min(Math.max(0, (Number(hataSayisi) || 1) - 1), 20);  // Math.pow tasmasini engelle
+  return Math.min(GERI_CEKILME_TABAN * Math.pow(2, us), GERI_CEKILME_UST_SINIR);
+}
+
+// Geri cekilme kapisi: setInterval, 'online' olayi ve dogrudan cagrilar da bu
+// zamani gozetmezse geri cekilmenin hicbir anlami kalmaz.
+let sonrakiDenemeZamani = 0;
+
+// Bir turu bitiren tek yol bitir()/hataOldu() idi. Firebase sozu HIC cozulmezse
+// ("navigator.onLine true ama baglanti olu" — deponun standart hali) tur asili
+// kalir: kilit birakilmaz, sayac artmaz, uyari cikmaz. Ornekler arasi kilit
+// eklendikten sonra bu, yalnizca o sekmeyi degil ayni cihazdaki TUM ornekleri
+// susturur. Tur zaman asimi, asili turu hataOldu yoluna dusurur.
+const TUR_ZAMAN_ASIMI = 60000;   // baglanti saglamken bir yazma bunun yanina bile yaklasmaz
+
+// Firebase'in GERCEK baglanti durumu (.info/connected). navigator.onLine yalnizca
+// ag arayuzunu bilir. Bu ayrimi tur zaman asimi zorunlu kildi: baglanti oluyken
+// baslatilan tur, SDK'nin giden kuyruguna yeniden baglaninca MUTLAKA uygulanacak
+// bir yazma birakir. Zaman asimi kilidi birakip baska ornegin ayni ogeyi yeniden
+// uygulamasina izin verseydi, baglanti dondugunde iki yazma da islenir ve stok
+// iki kez degisirdi. Cozum: baglanti olu iken hic tur BASLATMAMAK. Boylece asili
+// tek yazma vardir, o da cozuldugunde kendi bacak isaretini yazar ve ikinci kez
+// uygulanmaz.
+// Iyimser baslangic: dinleyici hic kurulamazsa davranis eskisi gibi kalir.
+let firebaseBagli = true;
+function baglantiDurumunuAyarla(bagli) {
+  const oncedenKopuktu = firebaseBagli === false;
+  firebaseBagli = bagli === true;
+  // Baglanti gercekten geri geldi: geri cekilme kapisini ac ve hemen dene.
+  if (firebaseBagli && oncedenKopuktu) { sonrakiDenemeZamani = 0; trySyncQueue(); }
+}
+
+// Kullaniciya "hangi islem takildi" diyebilmek icin okunabilir ozet.
+function kuyrukOgesiOzeti(oge) {
+  if (!oge) return '';
+  const yer = oge.type === 'transfer'
+    ? `${(depots && depots[oge.fromDepot]) || oge.fromDepot} → ${(depots && depots[oge.toDepot]) || oge.toDepot}`
+    : ((depots && depots[oge.depotId]) || oge.depotId);
+  const tur = oge.type === 'transfer' ? 'Transfer' : (oge.type === 'giris' ? 'Giriş' : 'Çıkış');
+  return `${tur} · ${oge.ad || oge.kod} · ${fmtNum(oge.miktar)} ${oge.birim || ''} · ${yer}`;
+}
+
+// ===== Ornekler arasi kuyruk kilidi (I3) =====
+// kuyrukIsleniyor yalnizca BU JS baglaminda gecerli; kuyruk ise ayni kokendeki
+// tum ornekler tarafindan paylasilan localStorage'da duruyor. Kurulu PWA ile
+// tarayici sekmesi ayni anda acikken 15 sn'lik zamanlayicilar yakin anda
+// tetiklenirse ikisi de kilidi bos gorur, ikisi de ayni ogeyi uygular ve delta
+// sunucuya IKI KEZ yazilir (Ana=100, CIKIS 5 -> 90; dogrusu 95).
+//
+// Once Web Locks denenir (Chrome/Safari destekliyor, sekme cokerse kilit
+// kendiliginden birakilir). Yoksa localStorage uzerinde SURELI kiralama:
+// sahiplik damgasi + bitis zamani, boylece kilidi tutan ornek coker de
+// birakamazsa kilit sonsuza kadar kalmaz.
+const KILIT_ADI = 'alkol_kuyruk_kilidi';
+const KILIT_ANAHTARI = 'pending_queue_kilit';
+const KILIT_OMRU = 30000;       // kiralama suresi
+const KILIT_TAZELEME = 10000;   // uzun suren gonderimde kiralama tazelenir
+const ORNEK_KIMLIGI = 'ornek_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+
+function kiralamaOku() {
+  try { return JSON.parse(localStorage.getItem(KILIT_ANAHTARI) || 'null'); } catch (e) { return null; }
+}
+
+// Basarili olursa { birak, bizdeMi } doner, olmazsa null. null bir HATA DEGIL:
+// "baska bir ornek zaten isliyor" demektir, cagiran sessizce doner.
+// bizdeMi(): kiralama SU AN hala bizde mi? Arka planda kisilan/dondurulan
+// sekmede tazeleyici durur, 30 sn sonra kiralama duser ve baska ornek devralir;
+// bu sekme sonradan uyanip yazarsa ayni delta iki kez uygulanir. Bu yuzden
+// Firebase'e yazmadan hemen once sahiplik yeniden sinanir.
+function kiralamaAl() {
+  const simdi = Date.now();
+  const mevcut = kiralamaOku();
+  if (mevcut && mevcut.sahip !== ORNEK_KIMLIGI && Number(mevcut.bitis) > simdi) return null;
+  try {
+    localStorage.setItem(KILIT_ANAHTARI, JSON.stringify({ sahip: ORNEK_KIMLIGI, bitis: simdi + KILIT_OMRU }));
+  } catch (e) {
+    return null;   // kiralamayi yazamiyorsak kilit iddia edilemez
+  }
+  // yazma ile okuma arasinda baska bir ornek uzerine yazmis olabilir
+  const dogrula = kiralamaOku();
+  if (!dogrula || dogrula.sahip !== ORNEK_KIMLIGI) return null;
+  const tazeleyici = setInterval(() => {
+    const o = kiralamaOku();
+    if (!o || o.sahip !== ORNEK_KIMLIGI) return;   // kiralama elimizden alinmis, tazeleme
+    try { localStorage.setItem(KILIT_ANAHTARI, JSON.stringify({ sahip: ORNEK_KIMLIGI, bitis: Date.now() + KILIT_OMRU })); } catch (e) {}
+  }, KILIT_TAZELEME);
+  return {
+    birak: () => {
+      clearInterval(tazeleyici);
+      const o = kiralamaOku();
+      if (o && o.sahip === ORNEK_KIMLIGI) { try { localStorage.removeItem(KILIT_ANAHTARI); } catch (e) {} }
+    },
+    bizdeMi: () => {
+      const o = kiralamaOku();
+      return !!o && o.sahip === ORNEK_KIMLIGI && Number(o.bitis) > Date.now();
+    },
+  };
+}
+
+// Promise<{birak, bizdeMi}|null> doner.
+function kuyrukKilidiniAl() {
+  if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+    return new Promise(cozumle => {
+      let birak;
+      const tutulan = new Promise(r => { birak = r; });
+      navigator.locks.request(KILIT_ADI, { ifAvailable: true, mode: 'exclusive' }, kilit => {
+        if (!kilit) { cozumle(null); return; }   // baska ornek tutuyor
+        // Web Locks'ta kilit birakilana kadar tarayici garantisiyle bizdedir;
+        // kiralamadaki gibi elimizden alinamaz, bu yuzden bizdeMi hep true.
+        cozumle({ birak: () => birak(), bizdeMi: () => true });
+        return tutulan;                          // birak() cagrilana kadar kilit bizde
+      }).catch(() => cozumle(null));
+    });
+  }
+  return Promise.resolve(kiralamaAl());
+}
 
 function updateOfflineBar() {
   const bar = document.getElementById('offlineBar');
   const q = getQueue();
   const isOnline = navigator.onLine;
+  if (depolamaDoldu) {
+    bar.style.display = 'block';
+    bar.style.background = '#c62828';
+    bar.textContent = q.length > 0
+      ? `Cihaz depolaması dolu — ${q.length} işlem gönderilemedi, sunucuya hiçbir şey yazılmadı. Kayıtlar cihazda duruyor; telefonda yer açıp uygulamayı yeniden başlatın, gönderim kaldığı yerden sürer.`
+      : 'Cihaz depolaması dolu — senkronizasyon durduruldu, sunucuya hiçbir şey yazılmadı. Telefonda yer açıp uygulamayı yeniden başlatın.';
+    return;
+  }
   if (!isOnline) {
     bar.style.display = 'block';
     bar.textContent = q.length > 0
@@ -904,8 +1162,18 @@ function updateOfflineBar() {
       : 'İnternet yok — işlemler cihazda kaydediliyor';
   } else if (q.length > 0) {
     bar.style.display = 'block';
-    bar.style.background = '#1565c0';
-    bar.textContent = `${q.length} işlem senkronize ediliyor...`;
+    const hataSayisi = (q[0] && q[0]._hataSayisi) || 0;
+    if (hataSayisi >= HATA_ESIGI) {
+      // Gecici senkronizasyondan AYIRT EDILEBILIR olmali: mavi serit "birazdan
+      // gecer" demek, bu ise "gecmiyor, mudahale gerek" demek.
+      bar.style.background = '#C00000';
+      bar.textContent = `Bir işlem gönderilemiyor (${hataSayisi} deneme): ${kuyrukOgesiOzeti(q[0])}. `
+        + `Bekleyen ${q.length} işlem cihazda duruyor, hiçbiri silinmedi — sunucudaki stok bu işlemler kadar eski. `
+        + `İnterneti kontrol edip uygulamayı yeniden başlatın; sürerse bu işlemi yöneticiye bildirin.`;
+    } else {
+      bar.style.background = '#1565c0';
+      bar.textContent = `${q.length} işlem senkronize ediliyor...`;
+    }
   } else {
     bar.style.display = 'none';
     bar.style.background = '#c62828';
@@ -919,12 +1187,70 @@ function applyDeltaLocal(depotId, kod, delta) {
 
 let kuyrukIsleniyor = false; // ayni kuyruk ogesinin ust uste calisan trySyncQueue cagrilarinda iki kez uygulanmasini engeller
 
+// Ilerleme isareti kalicilastirilamadiginda firlatilir; korukorune yeniden denemek
+// yerine senkronizasyonu durdurmak icin normal ag hatasindan ayirt edilir.
+function DepolamaHatasi() { this.name = 'DepolamaHatasi'; }
+
 function trySyncQueue() {
+  if (depolamaDoldu) { updateOfflineBar(); return; } // yeniden deneme zamanlayicisi kurulmaz
   if (!navigator.onLine) { updateOfflineBar(); return; }
+  // Baglanti olu iken tur baslatma: asili kalacak bir yazma kuyruklamak, tur
+  // zaman asimi ile birlikte ayni deltanin iki kez uygulanmasina yol acardi.
+  if (!firebaseBagli) { updateOfflineBar(); return; }
+  // Geri cekilme kapisi: setInterval de, dogrudan cagrilar da bu zamani gozetmeli,
+  // yoksa 15 sn'lik zamanlayici artan araligi bosa cikarir.
+  if (Date.now() < sonrakiDenemeZamani) { updateOfflineBar(); return; }
   if (kuyrukIsleniyor) return; // setInterval, 'online' olayi ve dogrudan cagri ust uste binebilir
-  const q = getQueue();
-  if (q.length === 0) { updateOfflineBar(); return; }
+  if (getQueue().length === 0) { updateOfflineBar(); return; }
+  // Sonda kapisi kilitten ONCE de calisir: kiralama kilidi de localStorage'a
+  // yaziyor, kota doluyken kilit hic alinamaz ve kapiya varilamazdi — kullanici
+  // "cihaz depolamasi dolu" uyarisini hic gormezdi. (Kilidin ardinda BIR KEZ DAHA
+  // sinanir; asil garanti orada, Firebase'e dokunmadan hemen once.)
+  if (!kuyrukYazilabilirMi()) { senkronizasyonuDurdur(); return; }
+  // Kilit beklenirken bu baglamda yeniden girilmesin diye bayrak simdi kurulur.
   kuyrukIsleniyor = true;
+  try {
+    kuyrukKilidiniAl().then(kilit => {
+      // Kilit alinamadi = baska bir ornek zaten isliyor. Hata degil, sessizce don.
+      if (!kilit) { kuyrukIsleniyor = false; return; }
+      try {
+        kuyruguIsle(kilit);
+      } catch (e) {
+        // N3: kuyruguIsle'nin ic try/catch'inin DISINDA kalan senkron istisna.
+        // Buradan kacan istisna kilidi kalici tutardi — .catch() yalnizca JS
+        // bayragini kurtarir, ornekler arasi kilidi degil: cihazdaki tum
+        // ornekler susardi. Kilit her kosulda birakilir.
+        try { kilit.birak(); } catch (e2) {}
+        kuyrukIsleniyor = false;
+        try { updateOfflineBar(); } catch (e3) {}
+      }
+    }).catch(() => { kuyrukIsleniyor = false; });
+  } catch (e) {
+    // Kilit katmanindan senkron istisna: bayrak kalici true kalmasin.
+    // 15 sn'lik zamanlayici bir sonraki turda yeniden dener.
+    kuyrukIsleniyor = false;
+  }
+}
+
+function kuyruguIsle(kilit) {
+  // Kilit bir turda yalnizca bir kez birakilir; bitir/hataOldu de bir kez calisir.
+  let bitti = false;
+  const kilidiCoz = () => { const k = kilit; kilit = null; if (k) k.birak(); };
+
+  // Kilidi beklerken durum degismis olabilir: baska ornek kuyrugu bosaltmis ya da
+  // bu ornekte senkronizasyon durdurulmus olabilir. Kilidin ARDINDAN yeniden oku.
+  if (depolamaDoldu) { kilidiCoz(); kuyrukIsleniyor = false; updateOfflineBar(); return; }
+  const q = getQueue();
+  if (q.length === 0) { kilidiCoz(); kuyrukIsleniyor = false; updateOfflineBar(); return; }
+  // Firebase'e TEK BIR delta uygulamadan once ilerleme isaretini yazabilecek
+  // miyiz? Yazamiyorsak hicbir seye dokunmadan dur: uygulanmis ama isaretlenmemis
+  // delta, yeniden baslatmada ikinci kez uygulanirdi.
+  if (!kuyrukYazilabilirMi()) { kilidiCoz(); kuyrukIsleniyor = false; senkronizasyonuDurdur(); return; }
+  // Kiralama SU AN hala bizde mi? Arka planda kisilan sekmede tazeleyici
+  // durabilir, kiralama duser, baska ornek devralir. Firebase'e dokunmadan
+  // hemen once sahiplik yeniden sinanir — degilse hicbir delta uygulanmaz,
+  // oge kuyrukta kalir, devralan ornek (ya da bir sonraki tur) isler.
+  if (!kilit.bizdeMi()) { kilidiCoz(); kuyrukIsleniyor = false; updateOfflineBar(); return; }
   updateOfflineBar();
 
   const next = q[0];
@@ -934,27 +1260,59 @@ function trySyncQueue() {
   // Baslangicta hangi adimlarin daha once (ag kopmasi oncesi bir denemede) tamamlandigini
   // kuyruktaki ogeden okur; sadece kalan adimlar tekrar denenir, tamamlanmis adimlar
   // ikinci kez uygulanmaz.
+  // Isareti cihaza yazamazsa DepolamaHatasi firlatir: isaret kalicilasmadan
+  // yeniden denemek ayni deltayi ikinci kez uygulamak demektir.
   const guncelleKuyrukOgesi = (yamalar) => {
     Object.assign(next, yamalar);
     const guncel = getQueue();
     if (guncel.length && guncel[0].localId === next.localId) {
       Object.assign(guncel[0], yamalar);
-      setQueue(guncel);
+      if (!setQueue(guncel)) throw new DepolamaHatasi();
     }
   };
 
+  // Ardisik hata sayaci ogenin KENDI alaninda tutulur ve mevcut isaret desenindeki
+  // gibi kalicilastirilir: uygulama yeniden baslasa da takilan oge takili bilinir.
+  // Yazma basarisiz olursa sayac bellekte kalir — hicbir Firebase deltasi bu
+  // yazmaya bagli olmadigi icin bu guvenlidir.
+  const hataSayisiniArtir = () => {
+    const guncel = getQueue();
+    if (!guncel.length || guncel[0].localId !== next.localId) return 1;  // kuyrugun basi degismis, bu deneme bayat
+    const sayi = (guncel[0]._hataSayisi || 0) + 1;
+    guncel[0]._hataSayisi = sayi;
+    next._hataSayisi = sayi;
+    setQueue(guncel);
+    return sayi;
+  };
+
   const bitir = () => {
+    if (bitti) return;
+    bitti = true;
     try {
+      sonrakiDenemeZamani = 0;   // basarili gonderim: geri cekilme sifirlanir
       const remaining = getQueue().slice(1);
-      setQueue(remaining);
+      if (!setQueue(remaining)) { senkronizasyonuDurdur(); return; }
       if (remaining.length > 0) setTimeout(trySyncQueue, 200);
     } finally {
-      kuyrukIsleniyor = false; // setQueue patlasa bile kilit kalici olmaz
+      kilidiCoz();               // kuyruk yazildiktan SONRA birakilir
+      kuyrukIsleniyor = false;   // setQueue patlasa bile kilit kalici olmaz
       updateOfflineBar();
     }
   };
 
-  const hataOldu = () => { kuyrukIsleniyor = false; setTimeout(trySyncQueue, 5000); };
+  const hataOldu = (e) => {
+    if (bitti) return;
+    bitti = true;
+    if (e instanceof DepolamaHatasi) { kilidiCoz(); kuyrukIsleniyor = false; senkronizasyonuDurdur(); return; }
+    // Oge ATILMAZ; yalnizca yeniden deneme araligi acilir ve esik asilinca
+    // kullanici durum cubugunda kalici uyari gorur.
+    const bekleme = geriCekilmeSuresi(hataSayisiniArtir());
+    sonrakiDenemeZamani = Date.now() + bekleme;
+    kilidiCoz();
+    kuyrukIsleniyor = false;
+    updateOfflineBar();
+    setTimeout(trySyncQueue, bekleme);
+  };
 
   const kaydiGonder = () => {
     if (next._kaydedildi) { bitir(); return; }
@@ -966,24 +1324,35 @@ function trySyncQueue() {
     delete rec._fromUygulandi;
     delete rec._toUygulandi;
     delete rec._kaydedildi;
+    delete rec._hataSayisi;   // yerel yeniden deneme sayaci Firebase semasina sizmasin
     db.ref('transactions').push(rec).then(() => { guncelleKuyrukOgesi({ _kaydedildi: true }); bitir(); }).catch(hataOldu);
   };
 
-  if (next.type === 'transfer') {
-    const cikisSozu = next._fromUygulandi ? Promise.resolve()
-      : applyOne(next.fromDepot, next.kod, -next.miktar).then(() => guncelleKuyrukOgesi({ _fromUygulandi: true }));
-    const girisSozu = next._toUygulandi ? Promise.resolve()
-      : applyOne(next.toDepot, next.kod, next.miktar).then(() => guncelleKuyrukOgesi({ _toUygulandi: true }));
-    Promise.all([cikisSozu, girisSozu]).then(kaydiGonder).catch(hataOldu);
-  } else if (next._stokUygulandi) {
-    kaydiGonder();
-  } else {
-    const delta = next.type === 'giris' ? next.miktar : -next.miktar;
-    applyOne(next.depotId, next.kod, delta).then(() => { guncelleKuyrukOgesi({ _stokUygulandi: true }); kaydiGonder(); }).catch(hataOldu);
+  // M1: sevk blogundan kacan SENKRON bir istisna, kilidi kalici true birakip
+  // oturum boyunca senkronizasyonu oldururdu. Bugun ulasilabilir bir tetikleyici
+  // bilinmiyor; koruma katmani yine de olmali — istisna hataOldu yoluna dusurulur,
+  // kilit (hem JS bayragi hem ornekler arasi kilit) serbest kalir.
+  try {
+    if (next.type === 'transfer') {
+      const cikisSozu = next._fromUygulandi ? Promise.resolve()
+        : applyOne(next.fromDepot, next.kod, -next.miktar).then(() => guncelleKuyrukOgesi({ _fromUygulandi: true }));
+      const girisSozu = next._toUygulandi ? Promise.resolve()
+        : applyOne(next.toDepot, next.kod, next.miktar).then(() => guncelleKuyrukOgesi({ _toUygulandi: true }));
+      Promise.all([cikisSozu, girisSozu]).then(kaydiGonder).catch(hataOldu);
+    } else if (next._stokUygulandi) {
+      kaydiGonder();
+    } else {
+      const delta = next.type === 'giris' ? next.miktar : -next.miktar;
+      applyOne(next.depotId, next.kod, delta).then(() => { guncelleKuyrukOgesi({ _stokUygulandi: true }); kaydiGonder(); }).catch(hataOldu);
+    }
+  } catch (e) {
+    hataOldu(e);
   }
 }
 
-window.addEventListener('online', trySyncQueue);
+// Baglanti geri geldi: gercek bir sinyal oldugu icin geri cekilme kapisi acilir,
+// takilmis kuyruk 5 dk beklemeden hemen denenir.
+window.addEventListener('online', () => { sonrakiDenemeZamani = 0; trySyncQueue(); });
 window.addEventListener('offline', updateOfflineBar);
 setInterval(trySyncQueue, 15000);
 updateOfflineBar();
@@ -1189,7 +1558,7 @@ function searchProduct(q) {
     .filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q))
     .slice(0, 20);
   acList.innerHTML = eslesenler.map(p =>
-    `<div onclick='pickProduct("${escapeHtml(p[0])}")'>${escapeHtml(p[1])}<div class="ac-code">${escapeHtml(p[0])} · ${escapeHtml(p[2])}</div></div>`
+    `<div data-eylem="urunSec" data-kod="${escapeHtml(p[0])}">${escapeHtml(p[1])}<div class="ac-code">${escapeHtml(p[0])} · ${escapeHtml(p[2])}</div></div>`
   ).join('');
 }
 
@@ -1249,6 +1618,7 @@ function saveTransaction() {
   islemKaydediliyor = true;
   try {
     let txRecord;
+    let deltalar;   // [[depoId, kod, delta], ...] — kuyruga yazilana kadar UYGULANMAZ
     if (txType === 'transfer') {
       const from = document.getElementById('fromDepot').value;
       const to = document.getElementById('toDepot').value;
@@ -1259,31 +1629,34 @@ function saveTransaction() {
       }
       if (!stokUyarisiGec(from, kod, miktar, birim)) return;
       txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId };
-      applyDeltaLocal(from, kod, -miktar);
-      applyDeltaLocal(to, kod, miktar);
+      deltalar = [[from, kod, -miktar], [to, kod, miktar]];
     } else {
       const depotId = document.getElementById('singleDepot').value;
       if (txType === 'cikis' && !stokUyarisiGec(depotId, kod, miktar, birim)) return;
       txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId };
-      const delta = txType === 'giris' ? miktar : -miktar;
-      applyDeltaLocal(depotId, kod, delta);
+      deltalar = [[depotId, kod, txType === 'giris' ? miktar : -miktar]];
     }
 
+    // ONCE dayanikli kuyruga yaz, ANCAK basariliysa kalici etki dogur (geriAl ile ayni desen).
+    // setQueue artik firlatmiyor, donus degeriyle bildiriyor — asagidaki catch'in
+    // "cihaz depolamasi dolu" mesajini gostermesi icin hatayi burada uretiyoruz.
+    const q = getQueue();
+    q.push(txRecord);
+    if (!setQueue(q)) throw new Error('Kuyruk cihaza yazilamadi');
+
+    // Kuyruk yazmasi basarili — yerel etkiler simdi dogurulabilir
+    deltalar.forEach(d => applyDeltaLocal(d[0], d[1], d[2]));
     // Anında ekranda göster (internet olmasa bile)
     transactions.unshift(txRecord);
     saveCache();
 
-    // Kuyruğa ekle ve senkronizasyonu dene
-    const q = getQueue();
-    q.push(txRecord);
-    setQueue(q);
     updateOfflineBar();
     trySyncQueue();
 
     closeModal();
     render();
   } catch (e) {
-    errBox.textContent = 'Kayıt yapılamadı — cihaz depolaması dolu ya da erişilemez olabilir.';
+    errBox.textContent = 'Kayıt yapılamadı — cihaz depolaması dolu ya da erişilemez olabilir. Hiçbir şey değişmedi; telefonda yer açıp tekrar deneyin.';
     errBox.style.display = 'block';
     throw e;
   } finally {
@@ -1295,7 +1668,8 @@ function saveTransaction() {
 function geriAl(id) {
   const tx = transactions.find(t => t.id === id);
   if (!tx) return;
-  if (tx.reverted) { alert('Bu işlem zaten geri alınmış.'); return; }
+  // Gecmis satirindaki dugme kosuluyla ayni gercek kullanilir
+  if (geriAlinmisMi(tx)) { alert('Bu işlem zaten geri alınmış.'); return; }
 
   const ozet = tx.type === 'transfer'
     ? `${depots[tx.fromDepot] || tx.fromDepot} → ${depots[tx.toDepot] || tx.toDepot}`
@@ -1305,30 +1679,46 @@ function geriAl(id) {
   const simdi = Date.now();
   const localId = 'local_' + simdi + '_' + Math.random().toString(36).slice(2, 8);
   let ters;
+  let deltalar;   // [[depoId, kod, delta], ...] — kuyruga yazilana kadar UYGULANMAZ
 
   if (tx.type === 'transfer') {
     ters = { type: 'transfer', fromDepot: tx.toDepot, toDepot: tx.fromDepot,
              kod: tx.kod, ad: tx.ad, birim: tx.birim, miktar: tx.miktar,
              note: 'Geri alma', ts: simdi, localId, revertOf: id };
-    applyDeltaLocal(tx.toDepot, tx.kod, -tx.miktar);
-    applyDeltaLocal(tx.fromDepot, tx.kod, tx.miktar);
+    deltalar = [[tx.toDepot, tx.kod, -tx.miktar], [tx.fromDepot, tx.kod, tx.miktar]];
   } else {
     const tersTur = tx.type === 'giris' ? 'cikis' : 'giris';
     ters = { type: tersTur, depotId: tx.depotId,
              kod: tx.kod, ad: tx.ad, birim: tx.birim, miktar: tx.miktar,
              note: 'Geri alma', ts: simdi, localId, revertOf: id };
-    applyDeltaLocal(tx.depotId, tx.kod, tersTur === 'giris' ? tx.miktar : -tx.miktar);
+    deltalar = [[tx.depotId, tx.kod, tersTur === 'giris' ? tx.miktar : -tx.miktar]];
   }
 
+  // ONCE dayanikli kuyruga yaz, ANCAK basariliysa kalici etki dogur.
+  // Ters sirada (once uygula, sonra kuyruga yaz) kuyruk yazmasi basarisiz olursa
+  // ters kayit hicbir yerde durmaz ama orijinal islem sunucuda kalici olarak
+  // reverted:true isaretlenmis olur: sunucudaki stok hic duzelmez ve
+  // geriAlinmisMi() bu bayragi gordugu icin "Geri al" dugmesi bir daha
+  // gorunmez — kurtarma yolu kapanir.
+  const q = getQueue();
+  q.push(ters);
+  if (!setQueue(q)) {
+    // Hicbir sey degismedi: yerel stok, tx.reverted, sunucudaki bayrak ve
+    // transactions dizisi oldugu gibi duruyor; kullanici sonra tekrar deneyebilir.
+    senkronizasyonuDurdur();
+    alert('Cihaz depolaması dolu — geri alma kaydedilemedi.\n\nHiçbir şey değişmedi: stok da işlem de olduğu gibi duruyor, işlem "geri alınmış" sayılmadı.\n\nTelefonda yer açıp uygulamayı yeniden başlatın; sonra bu işlemi tekrar geri alabilirsiniz.');
+    return;
+  }
+
+  // Kuyruk yazmasi basarili — kalici etkiler simdi dogurulabilir
+  deltalar.forEach(d => applyDeltaLocal(d[0], d[1], d[2]));
   tx.reverted = true;
-  db.ref('transactions/' + id + '/reverted').set(true);
+  db.ref('transactions/' + id + '/reverted').set(true)
+    .catch(e => console.warn('geri alma bayragi sunucuya yazilamadi', e));
 
   transactions.unshift(ters);
   saveCache();
 
-  const q = getQueue();
-  q.push(ters);
-  setQueue(q);
   updateOfflineBar();
   trySyncQueue();
   render();
