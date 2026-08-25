@@ -190,6 +190,16 @@
     margin-top: 18px; width: 180px; padding: 13px; border-radius: 10px; border: none;
     background: #fff; color: #1f3864; font-size: 15px; font-weight: 700;
   }
+
+  /* PIN karari verilene kadar uygulama icerigini orten perde.
+     Bos beyaz ekran yerine ne beklendigini soyler. */
+  #pinPerde {
+    position: fixed; inset: 0; background: #1f3864; z-index: 99;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; color: #fff; text-align: center;
+  }
+  #pinPerde h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+  #pinPerde .alt { font-size: 13px; opacity: .75; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -252,6 +262,56 @@ db.ref('settings/pinHash').on('value', snap => {
 function cihazDogrulanmisMi() {
   const zaman = Number(localStorage.getItem('pin_dogrulandi') || 0);
   return zaman > 0 && (Date.now() - zaman) < PIN_HATIRLA_GUN * 86400000;
+}
+
+// ===== PIN kapisi =====
+// render() kosulsuz calisiyordu; PIN karari ise onbellekte ozet yokken
+// db.ref('settings/pinHash').once('value') ile ASENKRON veriliyordu. Ag turu
+// bitene kadar depo listesi gorunup tiklanabiliyor, o pencerede islem
+// girilebiliyordu. Karar verilene kadar icerik perdeyle ortulur.
+function pinPerdesiniGoster() {
+  if (document.getElementById('pinPerde')) return;
+  const perde = document.createElement('div');
+  perde.id = 'pinPerde';
+  perde.innerHTML = `
+    <h2>Alkol Depo Takip</h2>
+    <div class="alt">Güvenlik kontrolü yapılıyor…<br>Birkaç saniye sürebilir.</div>
+  `;
+  document.body.appendChild(perde);
+}
+
+function pinPerdesiniKaldir() {
+  const perde = document.getElementById('pinPerde');
+  if (perde) perde.remove();
+}
+
+// Her kosulda COZULUR: 'var' | 'yok' | 'bilinmiyor'. urunSunucuKontrolu ile
+// ayni desen. KRITIK: RTDB'de once() sozu cevrimdisiyken HIC cozulmez — ne
+// then ne catch calisir. Render'i bu soze cirilciplak baglamak, onbellekte
+// ozet olmayan ve interneti olmayan bir cihazda uygulamayi SONSUZA DEK bos
+// birakirdi (PIN kurulumunda tam olarak bu yasandi). Bu yuzden bekleyis
+// surelidir: karar verilemezse kilitleme yonunde degil, SERBEST BIRAKMA
+// yonunde basarisiz olunur.
+const PIN_KONTROL_SURESI = 4000;
+
+function pinOzetiSunucuKontrolu() {
+  return new Promise(cozumle => {
+    let bitti = false;
+    const bir = durum => { if (bitti) return; bitti = true; cozumle(durum); };
+    // Baglanti olu iken sorgu hic cozulmez — beklemeye hic girme.
+    // NOT: firebaseBagli burada KULLANILAMAZ; bu kapi sayfa yuklenirken,
+    // o degiskenin `let` bildiriminden ONCE calisiyor (gecici olu bolge).
+    if (!navigator.onLine) { bir('bilinmiyor'); return; }
+    const sayac = setTimeout(() => bir('bilinmiyor'), PIN_KONTROL_SURESI);
+    try {
+      db.ref('settings/pinHash').once('value')
+        .then(snap => { clearTimeout(sayac); bir(snap && snap.val() ? 'var' : 'yok'); })
+        .catch(() => { clearTimeout(sayac); bir('bilinmiyor'); });
+    } catch (e) {
+      clearTimeout(sayac);
+      bir('bilinmiyor');
+    }
+  });
 }
 
 function pinEkraniniGoster(kip) {
@@ -336,7 +396,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v18';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v20';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -373,7 +433,7 @@ function renderDepotList() {
     const totalUnits = codes.reduce((s,k) => s + (items[k]||0), 0);
     html += `<div class="depot-card" data-eylem="depoAc" data-depo="${escapeHtml(id)}">
       <div class="name" onclick="event.stopPropagation()">
-        <input value="${escapeHtml(depots[id])}" data-eylem="depoAdiDegistir" data-depo="${escapeHtml(id)}">
+        <input value="${escapeHtml(depots[id])}" maxlength="${DEPO_ADI_MAX}" data-eylem="depoAdiDegistir" data-depo="${escapeHtml(id)}">
       </div>
       <div class="stats">
         <div class="num">${codes.length}</div>
@@ -391,9 +451,40 @@ function openDepot(id) {
   history.pushState({ depotAcik: true }, '');
 }
 
+// Depo adi uzunluk siniri. Sinir YALNIZCA depoEkle'de olsaydi ise yaramazdi:
+// kullanici kisa adla ekleyip renameDepot ile istedigi kadar uzun ada
+// cevirebilirdi. Iki giris noktasinda da zorlanir.
+const DEPO_ADI_MAX = 40;
+
 function renameDepot(id, val) {
-  val = val.trim() || DEFAULT_DEPOTS[id] || depots[id];
+  // Sinir yalnizca kullanicinin GERCEKTEN yazdigi degere uygulanir. Kutu
+  // bosaltilip varsayilana/mevcut ada dusulduyse (asagidaki fallback), o ad
+  // zaten kayitliydi — belki bu sinir eklenmeden once, 40 karakterden uzun.
+  // Fallback SONRASI uzunluga bakmak, kullanicinin hic yazmadigi bir
+  // uzunluk yuzunden kafa karistirici bir "45 karakter girdiniz" reddine yol acardi.
+  const girilen = val.trim();
+  if (girilen && girilen.length > DEPO_ADI_MAX) {
+    alert(`Depo adı en fazla ${DEPO_ADI_MAX} karakter olabilir (girilen: ${girilen.length}).\n\nAd değiştirilmedi.`);
+    render();   // kutudaki uzun metin geri alinip kayitli ad gosterilir
+    return;
+  }
+  val = girilen || DEFAULT_DEPOTS[id] || depots[id];
+  // Isim cakismasi: depoEkle ayni adi engelliyordu ama renameDepot
+  // engellemiyordu; bir depo baska bir deponun adina cevrilebiliyor, ikisi
+  // raporda ve rapor tablosunda ayirt edilemez hale geliyordu. Kendi adina
+  // dokunmak serbest (ayni id haric tutulur).
+  if (Object.keys(depots).some(d => d !== id && String(depots[d]).toLowerCase() === val.toLowerCase())) {
+    alert(`"${val}" adında başka bir depo zaten var.\n\nAd değiştirilmedi.`);
+    render();   // kutudaki cakisan metin geri alinip kayitli ad gosterilir
+    return;
+  }
   depots[id] = val;
+  // Onbellek de yazilir: yoksa cevrimdisi yapilan ad degisikligi yeniden
+  // acilista eski ada donerdi (sunucuya yazma cevrimdisi cozulmez).
+  saveCache();
+  // Basari yolunda da render(): baslikta "N depo" ve rapor tablosu bir
+  // sonraki render'a kadar eski adi gosterebilirdi.
+  render();
   db.ref('depots/' + id).set(val)
     .catch(e => console.warn('depo adi sunucuya yazilamadi', e));
 }
@@ -787,11 +878,20 @@ function renderSettings() {
 function depoEkle() {
   const ad = (prompt('Yeni deponun adı:') || '').trim();
   if (!ad) return;
-  if (Object.values(depots).some(d => d.toLowerCase() === ad.toLowerCase())) {
+  if (ad.length > DEPO_ADI_MAX) {
+    alert(`Depo adı en fazla ${DEPO_ADI_MAX} karakter olabilir (girilen: ${ad.length}).\n\nDepo eklenmedi.`);
+    return;
+  }
+  // String(): veritabani acikca yazilabilir oldugundan bir depo adi dogrudan
+  // Firebase'e sayi/bool olarak yazilmis olabilir — renameDepot'taki ayni
+  // savunma burada da uygulanir.
+  if (Object.values(depots).some(d => String(d).toLowerCase() === ad.toLowerCase())) {
     alert('Bu adda bir depo zaten var.');
     return;
   }
-  const id = 'depo_' + Date.now();
+  // Yalniz Date.now() yetmiyor: ayni milisaniyede eklenen iki depo ayni id'yi
+  // alip birbirinin uzerine yaziyordu. localId uretimindeki desen uygulanir.
+  const id = 'depo_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   depots[id] = ad;
   if (!stock[id]) stock[id] = {};
   db.ref('depots/' + id).set(ad)
@@ -831,9 +931,73 @@ function urunEkle() {
   const grup = (prompt('Grup:\n\n' + gruplar.join('\n'), gruplar[0]) || '').trim().toUpperCase();
   if (!grup) return;
 
-  db.ref('customProducts/' + kod).set({ ad, birim, grup })
-    .catch(e => console.warn('yeni urun sunucuya yazilamadi', e));
-  alert(`"${ad}" eklendi.`);
+  const kayit = { ad, birim, grup };
+
+  // Sunucu tarafi cakisma kontrolu SURELIDIR ve akisi ASLA bloke etmez.
+  // KRITIK: Firebase RTDB'de once()/set()/transaction() sozleri SUNUCU ONAYI
+  // gelince cozulur; cevrimdisiyken HIC cozulmezler. Bu akis sunucuyu await
+  // etseydi, internetin normalde olmadigi depo alaninda "Urun Ekle" sonsuza
+  // dek donardi (PIN kurulumunda tam olarak bu yasandi). Bu yuzden kontrol
+  // zaman asimlidir: cevap gelmezse yerel karara guvenilip devam edilir ve
+  // kullaniciya kontrolun YAPILAMADIGI acikca soylenir.
+  urunSunucuKontrolu(kod).then(durum => {
+    if (durum === 'var') {
+      alert(`Bu kod sunucuda zaten kayıtlı: ${kod}\n\nBaşka bir cihaz aynı kodu daha önce eklemiş. Mevcut kayıt korundu, "${ad}" EKLENMEDİ.\n\nFarklı bir kod kullanın.`);
+      return;
+    }
+    urunuYaz(kod, kayit, durum === 'bilinmiyor');
+  }).catch(e => {
+    // Buraya dusmemesi gerekir (urunSunucuKontrolu her kosulda cozulur), ama
+    // sessiz kalinirsa kullanici urunun eklenip eklenmedigini hic ogrenemez.
+    console.warn('urun ekleme akisi hata verdi', e);
+    alert('Ürün eklenemedi — beklenmeyen bir hata oluştu. Lütfen tekrar deneyin.');
+  });
+}
+
+// Her kosulda COZULUR: 'var' | 'yok' | 'bilinmiyor'. 'bilinmiyor' = sunucuya
+// sorulamadi (cevrimdisi ya da cevap zamaninda gelmedi).
+const URUN_KONTROL_SURESI = 4000;
+
+function urunSunucuKontrolu(kod) {
+  return new Promise(cozumle => {
+    let bitti = false;
+    const bir = durum => { if (bitti) return; bitti = true; cozumle(durum); };
+    // Baglanti olu iken sorgu hic cozulmez — beklemeye hic girme.
+    if (!navigator.onLine || !firebaseBagli) { bir('bilinmiyor'); return; }
+    const sayac = setTimeout(() => bir('bilinmiyor'), URUN_KONTROL_SURESI);
+    try {
+      db.ref('customProducts/' + kod).once('value')
+        .then(snap => { clearTimeout(sayac); bir(snap && snap.exists() ? 'var' : 'yok'); })
+        .catch(() => { clearTimeout(sayac); bir('bilinmiyor'); });
+    } catch (e) {
+      clearTimeout(sayac);
+      bir('bilinmiyor');
+    }
+  });
+}
+
+// Yazma set() ile DEGIL transaction() ile yapilir: set() son yazani kazandirip
+// mevcut kaydi sessizce siler. transaction'in guncelleme islevi undefined
+// dondugunde yazma IPTAL edilir, yani var olan kaydin uzerine hicbir kosulda
+// yazilmaz. Cevrimdisi baslatilan transaction baglanti gelince sunucu degeriyle
+// YENIDEN calisir; o anda kod baskasi tarafindan alinmissa kendiliginden iptal
+// olur. Soz beklenmez (cevrimdisi hic cozulmez) — kullanici geri bildirimi
+// hemen verilir, gec ortaya cikan cakisma ayrica bildirilir.
+function urunuYaz(kod, kayit, kontrolYapilamadi) {
+  db.ref('customProducts/' + kod).transaction(mevcut => {
+    if (mevcut) return undefined;   // iptal: mevcut kayit korunur
+    return kayit;
+  }).then(sonuc => {
+    if (sonuc && sonuc.committed === false) {
+      alert(`"${kayit.ad}" eklenemedi: ${kod} kodu sunucuda başka bir kayıt tarafından kullanılıyor.\n\nMevcut kayıt korundu, hiçbir şeyin üzerine yazılmadı. Farklı bir kod kullanın.`);
+    }
+  }).catch(e => console.warn('yeni urun sunucuya yazilamadi', e));
+
+  if (kontrolYapilamadi) {
+    alert(`"${kayit.ad}" kaydedildi.\n\nİnternet olmadığı için bu kodun başka bir cihazda kullanılıp kullanılmadığı sunucuda KONTROL EDİLEMEDİ. Bağlantı gelince kontrol edilecek; kod başkası tarafından alınmışsa mevcut kayıt korunur, bu ekleme uygulanmaz ve size bildirilir.`);
+  } else {
+    alert(`"${kayit.ad}" eklendi.`);
+  }
 }
 
 function render() {
@@ -880,6 +1044,11 @@ document.querySelectorAll('nav.bottom button').forEach(btn => {
     currentTab = btn.dataset.tab;
     openDepotDetail = null;
     depotSearchQuery = '';
+    // Ekran burada zaten guncelleniyor: bekleyen render borcu KAPANIR.
+    // Bayrak dusurulmezse, arama kutusunda yazarken gelen veri onu kurmusken
+    // sekmeye tiklamak bayragi true birakiyor ve sonraki herhangi bir
+    // focusout gereksiz bir ekstra render tetikliyordu.
+    renderBekliyor = false;
     render();
   });
 });
@@ -927,11 +1096,26 @@ function loadCache() {
     if (c) customProducts = JSON.parse(c);
   } catch(e) {}
 }
+// Onbellege sigmayan kayitlar kirpilirken atilanlar en ESKILER olmali.
+// transactions dizisi KARISIK sirali: Firebase dinleyicisi onu eskiden yeniye
+// dolduruyor (Object.keys = push anahtari sirasi), yeni cevrimdisi kayit ise
+// unshift ile basa ekleniyor. Duz slice(0,300) bu yuzden en eski 299 kaydi
+// tutup EN YENI sunucu kaydini atiyordu; her cevrimdisi giriste bir tane daha
+// dusuyordu. ts'ye gore azalan siralanip kirpilir.
+// KOPYA uzerinde calisilir: canli dizinin sirasina baska kod dayaniyor olabilir,
+// yerinde siralama onu sessizce degistirirdi.
+function enYeniIslemler(sinir) {
+  return transactions
+    .slice()
+    .sort((a, b) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))
+    .slice(0, sinir);
+}
+
 function saveCache() {
   try {
     localStorage.setItem('cache_depots', JSON.stringify(depots));
     localStorage.setItem('cache_stock', JSON.stringify(stock));
-    localStorage.setItem('cache_tx', JSON.stringify(transactions.slice(0,300)));
+    localStorage.setItem('cache_tx', JSON.stringify(enYeniIslemler(300)));
     localStorage.setItem('cache_custom', JSON.stringify(customProducts));
   } catch(e) {
     // Onbellek yazilamadi - ayni localStorage kotasini paylasan kuyruk da
@@ -944,20 +1128,42 @@ function saveCache() {
   }
 }
 loadCache();
-render();
 
-if (!cihazDogrulanmisMi()) {
-  if (pinOzeti) {
-    pinEkraniniGoster('giris');
-  } else {
-    // Onbellekte ozet yok - Firebase'den gelmesini kisa sure bekle
-    db.ref('settings/pinHash').once('value').then(snap => {
-      if (cihazDogrulanmisMi()) return;
-      pinEkraniniGoster(snap.val() ? 'giris' : 'kurulum');
-    }).catch(() => {
-      // Cevrimdisi ve onbellekte ozet yok - kilitleme, uygulamayi ac
-    });
-  }
+// Uygulama icerigi PIN karari VERILENE KADAR kullaniciya acilmaz.
+// Her dalda render() ile onu orten ekran ayni senkron blokta calisir; arada
+// icerigin tiklanabildigi bir pencere olusmaz.
+if (cihazDogrulanmisMi()) {
+  render();                       // cihaz taze dogrulanmis: gecikme yok
+} else if (pinOzeti) {
+  render();
+  pinEkraniniGoster('giris');     // ozet onbellekte: karar zaten verilmis
+} else {
+  // Onbellekte ozet yok — sunucuya sorulur. Beklerken icerik perdeyle ortulur.
+  pinPerdesiniGoster();
+  pinOzetiSunucuKontrolu().then(durum => {
+    // try/finally SART: render() ya da pinEkraniniGoster() istisna atarsa
+    // perde hic kaldirilmaz ve kullanici kalici mavi ekranda kalir — PWA'da
+    // adres cubugu olmadigi icin cikisi da zor. Bu, C4'un ta kendisinin
+    // sekli. Perde HER kosulda kalkar; istisna yine de yukari gider.
+    try {
+      render();
+      if (!cihazDogrulanmisMi()) {
+        // 'bilinmiyor' olsa bile ozet bu arada canli dinleyiciden gelmis
+        // olabilir; gelmisse PIN sorulabilir, cunku dogrulama artik YEREL.
+        if (durum === 'var' || (durum === 'bilinmiyor' && pinOzeti)) pinEkraniniGoster('giris');
+        else if (durum === 'yok') pinEkraniniGoster('kurulum');
+        // Geriye kalan tek hal: sunucuya sorulamadi VE onbellekte ozet yok.
+        // Sorulacak bir PIN yok — KILITLEME, uygulamayi ac.
+      }
+    } finally {
+      // Perde en son kaldirilir ki PIN ekrani eklenirken arada icerik gorunmesin.
+      pinPerdesiniKaldir();
+    }
+  }).catch(e => {
+    // Sozun kendisi reddedilirse de perde kalmasin.
+    console.warn('PIN kapisi hata verdi', e);
+    pinPerdesiniKaldir();
+  });
 }
 
 // ===== Bekleyen işlem kuyruğu (internet yokken kaydedilenler) =====
@@ -1064,11 +1270,51 @@ const TUR_ZAMAN_ASIMI = 60000;   // baglanti saglamken bir yazma bunun yanina bi
 // uygulanmaz.
 // Iyimser baslangic: dinleyici hic kurulamazsa davranis eskisi gibi kalir.
 let firebaseBagli = true;
+
+// TUR_ZAMAN_ASIMI'nin KENDI actigi yeni bir delik: bekci bir turu vazgectiginde
+// o turun applyOne()/push() sozu RTDB SDK'sinin kendi ic kuyruguna dusmus
+// olabilir — baglanti gercekten donunce SDK onu KENDILIGINDEN gonderir. Boyle
+// bir zombi yazma varken kuyruktaki AYNI ogeyi yeniden isleyen HERHANGI bir
+// tetikleyici (reconnect kisayolu, hataOldu'nun kendi geri cekilme
+// zamanlayicisi, setInterval, dogrudan bir kullanici islemi) delta'yi ikinci
+// kez uygulayabilir. Riski TAMAMEN KAPATMAZ — zombi yazmanin gercekten
+// cozulup cozulmedigini ogrenmenin ucuz bir yolu yok (stok bir sayac, ozel
+// bir kayit degil) — yalnizca bu SABIT, TAHMINI pencere kadar DARALTIR.
+//
+// Bayrak BELLEKTE tutulur ama pencere de localStorage'a yazilir: kuyruk ve
+// ornekler arasi kilit paylasilir (bkz. kiralamaAl), sadece bu ornegin
+// bellegini korumak yeterli DEGIL — kurulu PWA + tarayici sekmesi ayni anda
+// acikken, BASKA bir ornek zombi yazmadan habersiz kendi turunu baslatip
+// ayni deltayi tekrar uygulayabilirdi. Sona erme zamani (bitis DAMGASI,
+// bayrak DEGIL) localStorage'a yazilir — kiralamadaki {sahip, bitis}
+// deseniyle ayni: temizleme zamanlayicisi hic calismasa bile (sekme
+// kapansa, arka planda kisilsa) pencere kendiliginden gecerliligini
+// yitirir, kalici olarak takili kalmaz.
+let zamanAsimliTurBekliyor = false;
+const ZAMAN_ASIMI_SONRASI_GUVENLI_BEKLEME = 15000;
+const ZAMAN_ASIMI_ANAHTARI = 'zombi_yazma_penceresi';   // ornekler arasi paylasilan bitis damgasi
+
+function zombiYazmaPenceresindeMi() {
+  if (zamanAsimliTurBekliyor) return true;
+  try {
+    const bitis = Number(localStorage.getItem(ZAMAN_ASIMI_ANAHTARI) || 0);
+    return bitis > Date.now();
+  } catch (e) {
+    return false;   // localStorage okunamiyorsa yalnizca bu ornegin bayragina guvenilir
+  }
+}
+
 function baglantiDurumunuAyarla(bagli) {
   const oncedenKopuktu = firebaseBagli === false;
   firebaseBagli = bagli === true;
+  if (!firebaseBagli || !oncedenKopuktu) return;
+  // zombiYazmaPenceresindeMi() burada da sinanir (trySyncQueue zaten kendi
+  // basina yeterli olsa da): boylece bu pencerede sonrakiDenemeZamani
+  // gereksiz yere sifirlanmaz, hataOldu'nun kurdugu geri cekilme bozulmaz.
+  if (zombiYazmaPenceresindeMi()) return;
   // Baglanti gercekten geri geldi: geri cekilme kapisini ac ve hemen dene.
-  if (firebaseBagli && oncedenKopuktu) { sonrakiDenemeZamani = 0; trySyncQueue(); }
+  sonrakiDenemeZamani = 0;
+  trySyncQueue();
 }
 
 // Kullaniciya "hangi islem takildi" diyebilmek icin okunabilir ozet.
@@ -1210,6 +1456,14 @@ function trySyncQueue() {
   // Baglanti olu iken tur baslatma: asili kalacak bir yazma kuyruklamak, tur
   // zaman asimi ile birlikte ayni deltanin iki kez uygulanmasina yol acardi.
   if (!firebaseBagli) { updateOfflineBar(); return; }
+  // Tek giris noktasi: bunu SADECE reconnect kisayolunda ya da yalnizca bu
+  // ornegin bellegindeki bir bayrakla sinamak yetmezdi — hataOldu'nun kendi
+  // 5 sn'lik yeniden deneme zamanlayicisi, setInterval(trySyncQueue, 15000),
+  // 'online' dinleyicisi VE ayni kuyrugu paylasan BASKA BIR ORNEK, hepsi bu
+  // fonksiyona farkli yollardan giriyor. zombiYazmaPenceresindeMi()
+  // localStorage'daki paylasilan bitis damgasini da sinar (bkz. tanimindaki
+  // yorum) — kapi burada, TEK yerde, her giris yolunu ve her ornegi kapsar.
+  if (zombiYazmaPenceresindeMi()) { updateOfflineBar(); return; }
   // Geri cekilme kapisi: setInterval de, dogrudan cagrilar da bu zamani gozetmeli,
   // yoksa 15 sn'lik zamanlayici artan araligi bosa cikarir.
   if (Date.now() < sonrakiDenemeZamani) { updateOfflineBar(); return; }
@@ -1248,10 +1502,15 @@ function trySyncQueue() {
 function kuyruguIsle(kilit) {
   // Kilit bir turda yalnizca bir kez birakilir; bitir/hataOldu de bir kez calisir.
   let bitti = false;
+  let turSayaci = null;   // asagida kurulur; bitir/hataOldu calisinca iptal edilir
   const kilidiCoz = () => { const k = kilit; kilit = null; if (k) k.birak(); };
 
-  // Kilidi beklerken durum degismis olabilir: baska ornek kuyrugu bosaltmis ya da
-  // bu ornekte senkronizasyon durdurulmus olabilir. Kilidin ARDINDAN yeniden oku.
+  // Kilidi beklerken durum degismis olabilir: baska ornek kuyrugu bosaltmis,
+  // bu ornekte senkronizasyon durdurulmus, ya da (kilit talebi cikarken
+  // senkrondu ama yine de) tam bu sirada baska bir ornek zaman asimina
+  // ugramis olabilir. Kilidin ARDINDAN yeniden oku — savunma katmani,
+  // trySyncQueue'daki kapiyla ayni kontrol.
+  if (zombiYazmaPenceresindeMi()) { kilidiCoz(); kuyrukIsleniyor = false; updateOfflineBar(); return; }
   if (depolamaDoldu) { kilidiCoz(); kuyrukIsleniyor = false; updateOfflineBar(); return; }
   const q = getQueue();
   if (q.length === 0) { kilidiCoz(); kuyrukIsleniyor = false; updateOfflineBar(); return; }
@@ -1301,6 +1560,7 @@ function kuyruguIsle(kilit) {
   const bitir = () => {
     if (bitti) return;
     bitti = true;
+    clearTimeout(turSayaci);
     try {
       sonrakiDenemeZamani = 0;   // basarili gonderim: geri cekilme sifirlanir
       const remaining = getQueue().slice(1);
@@ -1316,6 +1576,7 @@ function kuyruguIsle(kilit) {
   const hataOldu = (e) => {
     if (bitti) return;
     bitti = true;
+    clearTimeout(turSayaci);
     if (e instanceof DepolamaHatasi) { kilidiCoz(); kuyrukIsleniyor = false; senkronizasyonuDurdur(); return; }
     // Oge ATILMAZ; yalnizca yeniden deneme araligi acilir ve esik asilinca
     // kullanici durum cubugunda kalici uyari gorur.
@@ -1356,11 +1617,7 @@ function kuyruguIsle(kilit) {
       .catch(hataOldu);
   };
 
-  // M1: sevk blogundan kacan SENKRON bir istisna, kilidi kalici true birakip
-  // oturum boyunca senkronizasyonu oldururdu. Bugun ulasilabilir bir tetikleyici
-  // bilinmiyor; koruma katmani yine de olmali — istisna hataOldu yoluna dusurulur,
-  // kilit (hem JS bayragi hem ornekler arasi kilit) serbest kalir.
-  try {
+  const sevkEt = () => {
     if (next.type === 'transfer') {
       const cikisSozu = next._fromUygulandi ? Promise.resolve()
         : applyOne(next.fromDepot, next.kod, -next.miktar).then(() => guncelleKuyrukOgesi({ _fromUygulandi: true }));
@@ -1373,6 +1630,100 @@ function kuyruguIsle(kilit) {
       const delta = next.type === 'giris' ? next.miktar : -next.miktar;
       applyOne(next.depotId, next.kod, delta).then(() => { guncelleKuyrukOgesi({ _stokUygulandi: true }); kaydiGonder(); }).catch(hataOldu);
     }
+  };
+
+  // ===== Cihazlar arasi CIFT GERI ALMA korumasi =====
+  // geriAl'in sunucu denetimi cevrimdisiyken zaman asimina ugrayip yerel
+  // karara guveniyor (offline-first). Baska bir cihaz ayni islemi coktan
+  // geri almissa bu ikinci ters kayit stogu IKINCI KEZ bozar: 5 adet iki kez
+  // geri alinir. localId denetimi burada ise yaramaz — iki cihazin localId'si
+  // farklidir; ayirt edici alan revertOf'tur.
+  //
+  // Denetim, HICBIR BACAK UYGULANMADAN once yapilir. kaydiGonder icinde
+  // yapmak gec kalirdi: oraya varildiginda applyOne stogu coktan degistirmis
+  // olur ve kaydi dusurmek stok hatasini geri almaz.
+  //
+  // Bir bacak zaten uygulanmissa denetim ATLANIR: o delta sunucuda duruyor,
+  // ogeyi dusurmek kayitsiz bir stok degisikligi birakirdi. O halde sorgu
+  // zaten kendi kaydimizi bulurdu (bkz. kaydiGonder'deki localId denetimi).
+  const kopyaDenetimiGerekli = !!next.revertOf
+    && !next._stokUygulandi && !next._fromUygulandi && !next._toUygulandi && !next._kaydedildi;
+
+  // Tur zaman asimi: applyOne()/push() sozu, navigator.onLine=true olsa bile
+  // baglanti gercekten oluyken HIC cozulmeyebilir (RTDB'nin standart cevrimdisi
+  // davranisi). Cozulmezse ne bitir() ne hataOldu() calisir; kilit (JS bayragi +
+  // ornekler arasi kilit) kalici tutulur ve cihazdaki TUM ornekler susar. Bu
+  // sayac tur GERCEKTEN Firebase'e dokunmaya baslarken kurulur; bitir/hataOldu
+  // normal calisirsa iptal edilir, calismazsa kendisi hataOldu'yu tetikler.
+  turSayaci = setTimeout(() => {
+    // Vazgecilen turun sozu SDK'nin ic kuyruguna dusmus olabilir — bkz.
+    // zamanAsimliTurBekliyor tanimindaki yorum. trySyncQueue()'nun kendi
+    // giris kapisini bir sure kapali tutar: reconnect, hataOldu'nun geri
+    // cekilme zamanlayicisi, setInterval, dogrudan cagrilar VE ayni kuyrugu
+    // paylasan baska bir ornek dahil HEPSI — bu yuzden pencere hem bu
+    // ornegin bellegine (zamanAsimliTurBekliyor) hem localStorage'a
+    // (ZAMAN_ASIMI_ANAHTARI) yazilir. Bayrak/anahtar YALNIZCA kendi
+    // zamanlayicilariyla geri duser — bitir() onlara dokunmaz, "bir sonraki
+    // basarili tur" erken temizlemez.
+    zamanAsimliTurBekliyor = true;
+    try { localStorage.setItem(ZAMAN_ASIMI_ANAHTARI, String(Date.now() + ZAMAN_ASIMI_SONRASI_GUVENLI_BEKLEME)); } catch (e) {}
+    setTimeout(() => {
+      zamanAsimliTurBekliyor = false;
+      // removeItem SART DEGIL (anahtar zaten bir BITIS DAMGASI, boole degil —
+      // zombiYazmaPenceresindeMi() suresi gecince kendiliginden gecersiz sayar,
+      // kiralamadaki {sahip, bitis} deseniyle ayni), ama temiz tutmak icin silinir.
+      try { localStorage.removeItem(ZAMAN_ASIMI_ANAHTARI); } catch (e) {}
+    }, ZAMAN_ASIMI_SONRASI_GUVENLI_BEKLEME);
+    hataOldu(new Error('tur zaman asimi — baglanti oluyken bir yazma cozulmedi'));
+  }, TUR_ZAMAN_ASIMI);
+
+  // M1: sevk blogundan kacan SENKRON bir istisna, kilidi kalici true birakip
+  // oturum boyunca senkronizasyonu oldururdu. Bugun ulasilabilir bir tetikleyici
+  // bilinmiyor; koruma katmani yine de olmali — istisna hataOldu yoluna dusurulur,
+  // kilit (hem JS bayragi hem ornekler arasi kilit) serbest kalir.
+  try {
+    if (!kopyaDenetimiGerekli) { sevkEt(); return; }
+    // tersKayitSunucuKontrolu SURELIDIR: cevrimdisiyken sorgu hic cozulmez,
+    // sarmalayici 'bilinmiyor' ile serbest birakir — tur asili kalmaz.
+    // KUYRUK_KOPYA_KONTROL_SURESI kullanilir (geriAl'in 4 sn'lik insan-bekliyor
+    // tavani degil) — bu bir arka plan turu, zaman asimi ARDINDAKI tum
+    // kuyrugu da bloke eder.
+    tersKayitSunucuKontrolu(next.revertOf, KUYRUK_KOPYA_KONTROL_SURESI).then(durum => {
+      try {
+        if (durum === 'var') {
+          // Baska cihaz coktan geri almis: oge KOPYA. Hicbir delta
+          // uygulanmadi, kayit push edilmedi; oge kuyruktan dusurulur.
+          // Yerel stok da dogruya yakinsar: sunucudaki tek geri alma
+          // 'stock' dinleyicisiyle bu cihaza da iniyor.
+          // geriAlDevam() bu ogeyi kuyruga girmeden once transactions'a
+          // (unshift) ve cache_tx'e coktan yazmisti (iyimser gosterim).
+          // Push hic yapilmadigi icin transactions dinleyicisi onu asla
+          // silmeyecek — hayalet bir "ikinci geri alma" satiri gecmiste
+          // kalici kalirdi. Burada elle cikarilir.
+          transactions = transactions.filter(t => t.localId !== next.localId);
+          saveCache();
+          // scheduleRender() (render() degil): bu arka plan senkron turu,
+          // diger Firebase dinleyicileriyle ayni desen — kullanici bir yere
+          // yaziyorsa render araya girmez, focusout'ta kendiliginden akar.
+          scheduleRender();
+          // Once bitir(): kuyruk yazilip kilit BIRAKILSIN, sonra kullaniciyi
+          // bilgilendir. Ters sirada alert kilidi acik tutardi.
+          bitir();
+          alert('Bir geri alma uygulanmadı: bu işlem başka bir cihazda zaten geri alınmıştı.\n\nStok tek geri alma kadar değişti, ikinci kez uygulanmadı.');
+          return;
+        }
+        if (durum === 'bilinmiyor') {
+          // Sunucuya sorulamadi. BURADA yerel karara guvenmek, tam da
+          // kapatilmak istenen cift uygulama deliğidir: oge kuyrukta
+          // KALIR ve geri cekilmeyle yeniden denenir. Hicbir sey kaybolmaz.
+          hataOldu(new Error('kopya denetimi yapilamadi'));
+          return;
+        }
+        sevkEt();   // 'yok' — sunucuda ters kayit yok, normal yol
+      } catch (e) {
+        hataOldu(e);
+      }
+    }).catch(hataOldu);   // hataOldu bitti bayragiyla korumali: iki kez calismaz
   } catch (e) {
     hataOldu(e);
   }
@@ -1380,10 +1731,25 @@ function kuyruguIsle(kilit) {
 
 // Baglanti geri geldi: gercek bir sinyal oldugu icin geri cekilme kapisi acilir,
 // takilmis kuyruk 5 dk beklemeden hemen denenir.
-window.addEventListener('online', () => { sonrakiDenemeZamani = 0; trySyncQueue(); });
+window.addEventListener('online', () => {
+  // baglantiDurumunuAyarla'daki ayni gerekce: zombi-yazma penceresindeyken
+  // sonrakiDenemeZamani'yi sifirlamak hataOldu'nun kurdugu geri cekilmeyi
+  // bosa cikarirdi — trySyncQueue zaten girisi reddedecek olsa da.
+  if (zombiYazmaPenceresindeMi()) return;
+  sonrakiDenemeZamani = 0;
+  trySyncQueue();
+});
 window.addEventListener('offline', updateOfflineBar);
 setInterval(trySyncQueue, 15000);
 updateOfflineBar();
+
+// firebaseBagli'yi gercek bir sinyalle besler — bu dinleyici olmadan degisken
+// kalici olarak true kalir ve "baglanti oluyken tur baslatma" hizli yollari
+// (trySyncQueue, urunSunucuKontrolu, tersKayitSunucuKontrolu,
+// pinOzetiSunucuKontrolu haric — o kapi degisken tanimlanmadan calisir)
+// hicbir zaman devreye girmez; zaman asimina dusmeye devam ederler ama
+// gereksiz yere.
+db.ref('.info/connected').on('value', snap => baglantiDurumunuAyarla(snap.val() === true));
 
 // Firebase listeners (bağlantı varsa canlı veriyle günceller)
 db.ref('depots').on('value', snap => {
@@ -1631,9 +1997,21 @@ function saveTransaction() {
     errBox.style.display = 'block';
     return;
   }
-  const miktar = parseFloat(document.getElementById('miktarInput').value);
-  if (!miktar || miktar <= 0) {
+  // step="0.01" yalnizca arayuz ipucu — zorlanmiyor. Yuvarlanmamis giris
+  // (0.015 gibi) kaydedilirse stok toplamalarindaki round2 ile giris degeri
+  // arasinda fark olusur: giris + geri alma cifti baslangica DONMEZ.
+  // Bu yuzden yuvarlama GIRIS NOKTASINDA yapilir.
+  const hamMiktar = parseFloat(document.getElementById('miktarInput').value);
+  if (!isFinite(hamMiktar) || hamMiktar <= 0) {
     errBox.textContent = 'Geçerli bir miktar gir.';
+    errBox.style.display = 'block';
+    return;
+  }
+  const miktar = round2(hamMiktar);
+  // 0.004 gibi bir giris yuvarlaninca 0 olur ve reddedilmelidir (0.004 sise
+  // anlamsiz), ama SESSIZCE degil: kullanici neden reddedildigini gormeli.
+  if (miktar <= 0) {
+    errBox.textContent = `Miktar en az 0,01 olmalı. Girilen ${hamMiktar} değeri 0,01'e yuvarlandığında 0 oluyor.`;
     errBox.style.display = 'block';
     return;
   }
@@ -1708,23 +2086,61 @@ function geriAl(id) {
   // Ters kayit baska bir cihazdan geldiyse ya da bu islemin ustunden 300'den
   // fazla kayit gectiyse yerelde gorunmeyebilir (teorik, ama olasi). Kalici
   // etki dogurmadan hemen once, pencereden bagimsiz tanimlayici bir sorgu
-  // atilir. Cevrimdisiyse (sorgu hic cozulmez/reddedilirse) yerel karara
-  // guvenilip devam edilir — offline-first tasarimla tutarli.
-  db.ref('transactions').orderByChild('revertOf').equalTo(id).limitToFirst(1).once('value')
-    .then(snap => {
-      if (snap.exists()) {
-        tx.reverted = true;
-        saveCache();
-        alert('Bu işlem zaten geri alınmış.');
-        render();
-        return;
-      }
-      geriAlDevam(tx, id);
-    })
-    .catch(() => geriAlDevam(tx, id));
+  // atilir. Sorgu SURELIDIR: cevap gelmezse yerel karara guvenilip devam
+  // edilir — offline-first tasarimla tutarli.
+  tersKayitSunucuKontrolu(id).then(durum => {
+    if (durum === 'var') {
+      tx.reverted = true;
+      saveCache();
+      alert('Bu işlem zaten geri alınmış.');
+      render();
+      return;
+    }
+    geriAlDevam(tx, id, durum === 'bilinmiyor');
+  }).catch(e => {
+    // tersKayitSunucuKontrolu kendisi hicbir zaman reddetmez (her durumda
+    // cozulur); bu yalnizca yukaridaki .then govdesinden (render() ya da
+    // geriAlDevam) kacan beklenmedik bir senkron istisnayi yakalar —
+    // urunEkle'deki ayni desen. Yakalanmazsa kullanici hicbir mesaj gormeden
+    // kalirdi.
+    console.warn('geri alma akisi hata verdi', e);
+    alert('Geri alma tamamlanamadı — beklenmeyen bir hata oluştu.');
+  });
 }
 
-function geriAlDevam(tx, id) {
+// Her kosulda COZULUR: 'var' | 'yok' | 'bilinmiyor'. urunSunucuKontrolu ile
+// ayni desen. KRITIK: RTDB'de once() sozu cevrimdisiyken HIC cozulmez — ne
+// then ne catch calisir. Ciplak zincirde kullanici "Geri al"a basip
+// onayliyor, sonra hicbir sey olmuyordu: stok degismiyor, kuyruga bir sey
+// girmiyor, tek bir mesaj bile cikmiyordu. Depo alaninda geri alma en sik
+// CEVRIMDISI yapilan islem oldugu icin bu, sessiz bir islev kaybiydi.
+const GERI_AL_KONTROL_SURESI = 4000;    // geriAl: karsisinda bekleyen bir kullanici var, kisa tavan dogru
+// kuyruguIsle: kimse beklemiyor, ARKA PLAN senkronu. Ayni 4 sn kullanilirsa
+// zaman asimi kuyrugun basini "hataOldu" yoluna dusurur ve ARDINDAKI TUM
+// ogeler de onunla birlikte durur (kuyruk yalnizca q[0]'i isler) — zayif
+// bir baglantida sirf bu denetim yuzunden butun senkronizasyon kilitlenebilir.
+// Bu yuzden kuyruk tarafinda cok daha genis bir tavan kullanilir.
+const KUYRUK_KOPYA_KONTROL_SURESI = 20000;
+
+function tersKayitSunucuKontrolu(id, sure) {
+  return new Promise(cozumle => {
+    let bitti = false;
+    const bir = durum => { if (bitti) return; bitti = true; cozumle(durum); };
+    // Baglanti olu iken sorgu hic cozulmez — beklemeye hic girme.
+    if (!navigator.onLine || !firebaseBagli) { bir('bilinmiyor'); return; }
+    const sayac = setTimeout(() => bir('bilinmiyor'), sure || GERI_AL_KONTROL_SURESI);
+    try {
+      db.ref('transactions').orderByChild('revertOf').equalTo(id).limitToFirst(1).once('value')
+        .then(snap => { clearTimeout(sayac); bir(snap && snap.exists() ? 'var' : 'yok'); })
+        .catch(() => { clearTimeout(sayac); bir('bilinmiyor'); });
+    } catch (e) {
+      clearTimeout(sayac);
+      bir('bilinmiyor');
+    }
+  });
+}
+
+function geriAlDevam(tx, id, kontrolYapilamadi) {
   const simdi = Date.now();
   const localId = 'local_' + simdi + '_' + Math.random().toString(36).slice(2, 8);
   let ters;
@@ -1771,6 +2187,12 @@ function geriAlDevam(tx, id) {
   updateOfflineBar();
   trySyncQueue();
   render();
+
+  // Kullanici sunucu dogrulamasinin YAPILAMADIGINI bilmeli: geri alma yerel
+  // karara guvenilerek uygulandi. urunEkle'deki bildirimle ayni cizgide.
+  if (kontrolYapilamadi) {
+    alert('Geri alma kaydedildi.\n\nİnternet olmadığı için bu işlemin başka bir cihazda zaten geri alınıp alınmadığı sunucuda KONTROL EDİLEMEDİ. Kayıt cihazda duruyor, bağlantı gelince gönderilecek.');
+  }
 }
 
 function round2(n) { return Math.round(n * 100) / 100; }
