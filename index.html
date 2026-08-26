@@ -519,7 +519,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v27';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v28';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -535,6 +535,27 @@ function escapeHtml(deger) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Arama karsilastirmalari icin metni yerel ayardan BAGIMSIZ olarak ASCII'ye katlar.
+// toLocaleLowerCase('tr') KULLANILMAZ: 'BIRA' -> 'bira' olmali, 'bira' degil.
+// Sabit katalogdaki 322 urun ASCII (BIRA/LIKOR/SISE), kullanici verisi ise
+// Turkce karakterli olabildigi icin iki yon de ayni ASCII tabanda bulusmali.
+const ARAMA_KATLAMA = {
+  'İ': 'i', 'I': 'i', 'ı': 'i', 'i': 'i',
+  'Ş': 's', 'ş': 's',
+  'Ğ': 'g', 'ğ': 'g',
+  'Ü': 'u', 'ü': 'u',
+  'Ö': 'o', 'ö': 'o',
+  'Ç': 'c', 'ç': 'c'
+};
+
+function aramaNormali(deger) {
+  return String(deger == null ? '' : deger)
+    .replace(/[İIıiŞşĞğÜüÖöÇç]/g, ch => ARAMA_KATLAMA[ch])
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')   // 'İ'den arta kalan U+0307 dahil tum birlesen isaretler
+    .toLowerCase();
 }
 
 function prodMap() {
@@ -649,9 +670,9 @@ function renderDepotBody() {
   let html = '';
 
   if (depotSearchQuery.trim().length >= 2) {
-    const q = depotSearchQuery.trim().toLowerCase();
+    const q = aramaNormali(depotSearchQuery.trim());
     const eslesenler = Object.values(pm)
-      .filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q))
+      .filter(p => aramaNormali(p[1]).includes(q) || aramaNormali(p[0]).includes(q))
       .slice(0, 40);
     if (eslesenler.length === 0) {
       html = `<div class="empty-state">Sonuç bulunamadı.</div>`;
@@ -743,11 +764,11 @@ function renderReportBody() {
   }));
 
   let codes = [...allCodes];
-  const q = reportSearchQuery.trim().toLowerCase();
+  const q = aramaNormali(reportSearchQuery.trim());
   if (q) {
     codes = codes.filter(k => {
       const p = pm[k];
-      return (p ? p[1].toLowerCase() : k.toLowerCase()).includes(q) || k.toLowerCase().includes(q);
+      return aramaNormali(p ? p[1] : k).includes(q) || aramaNormali(k).includes(q);
     });
   }
 
@@ -2271,10 +2292,11 @@ function renderDepotFields() {
 
 function searchProduct(q) {
   const acList = document.getElementById('acList');
-  q = q.trim().toLowerCase();
+  q = q.trim();
   if (q.length < 2) { acList.innerHTML = ''; return; }
+  q = aramaNormali(q);
   const eslesenler = Object.values(prodMap())
-    .filter(p => p[1].toLowerCase().includes(q) || p[0].toLowerCase().includes(q))
+    .filter(p => aramaNormali(p[1]).includes(q) || aramaNormali(p[0]).includes(q))
     .slice(0, 20);
   acList.innerHTML = eslesenler.map(p =>
     `<div data-eylem="urunSec" data-kod="${escapeHtml(p[0])}">${escapeHtml(p[1])}<div class="ac-code">${escapeHtml(p[0])} · ${escapeHtml(p[2])}</div></div>`
