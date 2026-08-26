@@ -22,6 +22,14 @@
   }
   header h1 { margin: 0; font-size: 18px; font-weight: 600; }
   header .sub { font-size: 12px; opacity: .75; margin-top: 2px; }
+  .kullanici-etiket {
+    position: absolute; top: 14px; right: 16px;
+    background: rgba(255,255,255,.15); border: none; border-radius: 20px;
+    color: #fff; font-size: 12px; padding: 6px 12px; font-weight: 600;
+    /* Etiket mutlak konumlu; sinir olmadan uzun ad basliktaki h1'in uzerine
+       biniyordu. Genislik sinirlanip tasan kisim ucnokta ile kirpilir. */
+    max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 
   .container { padding: 12px; }
 
@@ -190,6 +198,10 @@
     margin-top: 18px; width: 180px; padding: 13px; border-radius: 10px; border: none;
     background: #fff; color: #1f3864; font-size: 15px; font-weight: 700;
   }
+  #pinEkrani button.ikincil {
+    margin-top: 10px; background: transparent; color: #fff;
+    border: 1px solid rgba(255,255,255,.55); font-weight: 600;
+  }
 
   /* PIN karari verilene kadar uygulama icerigini orten perde.
      Bos beyaz ekran yerine ne beklendigini soyler. */
@@ -207,6 +219,7 @@
 <header>
   <h1>Alkol Depo Takip</h1>
   <div class="sub" id="header-sub">3 depo &middot; Alibey Club</div>
+  <button id="kullaniciEtiketi" class="kullanici-etiket" data-eylem="kullaniciCikis" style="display:none"></button>
 </header>
 <div id="offlineBar" style="display:none; background:#c62828; color:#fff; font-size:12px; text-align:center; padding:6px; position:sticky; top:56px; z-index:19;"></div>
 
@@ -248,25 +261,33 @@ async function sha256(metin) {
   return [...new Uint8Array(tampon)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const PIN_HATIRLA_GUN = 30;
-let pinOzeti = localStorage.getItem('cache_pin_hash') || null;
+// Girilen PIN'in hash'i users icindeki 4 (ya da daha fazla/az) kayittan
+// biriyle eslesiyor mu diye tarar. Eslesen olursa {id, ad, pinHash, rol}
+// dondurur, yoksa null.
+async function kullaniciEslesenPin(pin) {
+  const ozet = await sha256(pin);
+  const id = Object.keys(users).find(k => users[k] && users[k].pinHash === ozet);
+  return id ? { id, ...users[id] } : null;
+}
 
-db.ref('settings/pinHash').on('value', snap => {
-  const deger = snap.val();
-  if (deger) {
-    pinOzeti = deger;
-    localStorage.setItem('cache_pin_hash', deger);   // cevrimdisi dogrulama icin sart
-  }
-});
+const PIN_HATIRLA_GUN = 30;
+let mevcutKullanici = null;   // {id, ad, pinHash, rol} | null — giris sonrasi doldurulur
+let users = {};   // {id: {ad, pinHash, rol}} — Gorev 2'de giris akisinda kullanilacak
 
 function cihazDogrulanmisMi() {
   const zaman = Number(localStorage.getItem('pin_dogrulandi') || 0);
-  return zaman > 0 && (Date.now() - zaman) < PIN_HATIRLA_GUN * 86400000;
+  if (!(zaman > 0 && (Date.now() - zaman) < PIN_HATIRLA_GUN * 86400000)) return false;
+  // Hatirlanan kullanici hala var mi? Yonetici bu kullaniciyi sildiyse (Gorev 6)
+  // eski cihaz kimligi artik gecersiz sayilir, yeniden PIN sorulur.
+  const id = localStorage.getItem('cache_kullanici_id');
+  if (!id || !users[id]) return false;
+  mevcutKullanici = { id, ...users[id] };
+  return true;
 }
 
 // ===== PIN kapisi =====
-// render() kosulsuz calisiyordu; PIN karari ise onbellekte ozet yokken
-// db.ref('settings/pinHash').once('value') ile ASENKRON veriliyordu. Ag turu
+// render() kosulsuz calisiyordu; PIN karari ise onbellekte kullanici yokken
+// db.ref('users').once('value') ile ASENKRON veriliyordu. Ag turu
 // bitene kadar depo listesi gorunup tiklanabiliyor, o pencerede islem
 // girilebiliyordu. Karar verilene kadar icerik perdeyle ortulur.
 function pinPerdesiniGoster() {
@@ -294,7 +315,7 @@ function pinPerdesiniKaldir() {
 // yonunde basarisiz olunur.
 const PIN_KONTROL_SURESI = 4000;
 
-function pinOzetiSunucuKontrolu() {
+function kullaniciSunucuKontrolu() {
   return new Promise(cozumle => {
     let bitti = false;
     const bir = durum => { if (bitti) return; bitti = true; cozumle(durum); };
@@ -304,7 +325,7 @@ function pinOzetiSunucuKontrolu() {
     if (!navigator.onLine) { bir('bilinmiyor'); return; }
     const sayac = setTimeout(() => bir('bilinmiyor'), PIN_KONTROL_SURESI);
     try {
-      db.ref('settings/pinHash').once('value')
+      db.ref('users').once('value')
         .then(snap => { clearTimeout(sayac); bir(snap && snap.val() ? 'var' : 'yok'); })
         .catch(() => { clearTimeout(sayac); bir('bilinmiyor'); });
     } catch (e) {
@@ -314,19 +335,39 @@ function pinOzetiSunucuKontrolu() {
   });
 }
 
-function pinEkraniniGoster(kip) {
-  const kurulum = kip === 'kurulum';
+// vazgecilebilir=true YALNIZCA ust basliktaki "Giris yap" etiketinden acilista
+// verilir. Acilis kapisindan gelen cagrilar (vazgecilebilir yok) eskisi gibi
+// kapatilamaz kalir. Vazgec dugmesi SART: #pinEkrani cikissiz tam ekran bir
+// perde; kimliksiz acilmis cevrimdisi bir cihazda users bos olabilir ve o
+// durumda hicbir PIN eslesmez — dugme olmasa kullanici kendi actigi ekranda
+// kilitlenirdi. Kodun her yerindeki "kilitleme yonunde degil, serbest birakma
+// yonunde basarisiz ol" kurali burada da gecerli.
+function pinEkraniniGoster(vazgecilebilir) {
+  if (document.getElementById('pinEkrani')) return;   // cift acilmayi engelle
+  // Kapatilmis bir onceki ekrandan artakalan sayac, yeni ekranin kacis yolunu
+  // kendi suresinden ONCE acabilirdi. Yeni ekran yeni bir bekleme baslatir.
+  pinKacisSayaciniDurdur();
   const ekran = document.createElement('div');
   ekran.id = 'pinEkrani';
   ekran.innerHTML = `
-    <h2>${kurulum ? 'PIN Belirle' : 'Alkol Depo Takip'}</h2>
-    <div class="alt">${kurulum ? '4 haneli bir kod seç' : 'Devam etmek için PIN gir'}</div>
+    <h2>Alkol Depo Takip</h2>
+    <div class="alt">Devam etmek için PIN gir</div>
     <input id="pinGirdi" type="password" inputmode="numeric" maxlength="4"
            autocomplete="off" enterkeyhint="done" placeholder="····">
     <div class="pin-hata" id="pinHata"></div>
-    <button id="pinOnayBtn">${kurulum ? 'Kaydet' : 'Gir'}</button>
+    <button id="pinOnayBtn">Gir</button>
+    ${vazgecilebilir ? '<button id="pinVazgecBtn" class="ikincil">Vazgeç</button>' : ''}
   `;
   document.body.appendChild(ekran);
+  // Ekranin "iptal edilebilir mi" kimligi UZERINDE tasinir. Etiketten acilan
+  // ekran her kosulda iptal edilebilir (ortada bir oturum yok, iptal kullaniciyi
+  // bulundugu duruma dondurur). Kapidan acilan ekran ise iptal edilemez; ona
+  // yalnizca users bos oldugu SURECE gecici bir kacis yolu eklenir ve veri
+  // gelince o kacis yolu geri alinir (pinEkraniVeriDurumunuTazele).
+  if (vazgecilebilir) {
+    ekran.dataset.vazgecilebilir = '1';
+    document.getElementById('pinVazgecBtn').addEventListener('click', () => ekran.remove());
+  }
 
   const girdi = document.getElementById('pinGirdi');
   const hata = document.getElementById('pinHata');
@@ -335,51 +376,133 @@ function pinEkraniniGoster(kip) {
   async function onayla() {
     const kod = girdi.value.trim();
     if (!/^\d{4}$/.test(kod)) { hata.textContent = 'PIN 4 rakam olmalı.'; return; }
-    const ozet = await sha256(kod);
-
-    if (kurulum) {
-      // RTDB'de set() sozu SUNUCU ONAYI gelince cozulur; cevrimdisiyken yazma
-      // yerel olarak uygulanir ama soz asili kalir. Beklenirse ekrani kapatan
-      // satirlara hic ulasilamaz ve kurulum ekrani kalici kilitlenir — internetin
-      // olmamasi bu uygulamanin normal calisma kosulu. Once yerel durum, sonra
-      // beklemeden ates-unut: Firebase baglanti gelince kendiliginden gonderir.
-      pinOzeti = ozet;
-      localStorage.setItem('cache_pin_hash', ozet);
-      db.ref('settings/pinHash').set(ozet)
-        .catch(e => console.warn('PIN sunucuya yazilamadi', e));
-    } else if (ozet !== pinOzeti) {
+    // users HENUZ BOS olabilir: bu ekran acilis kapisinin 'var' dalinda da
+    // aciliyor ve db.ref('users').on() dinleyicisi kapidan SONRA kaydoluyor.
+    // O aralikta DOGRU bir PIN de eslesmez; "PIN hatali." demek kullaniciyi
+    // yanlis bilgilendirmek olurdu. Durum oldugu gibi soylenir.
+    if (Object.keys(users).length === 0) {
+      hata.textContent = 'Kullanıcı listesi henüz yüklenmedi, PIN kontrol edilemiyor.';
+      pinEkraniVeriDurumunuTazele();
+      return;
+    }
+    const bulunan = await kullaniciEslesenPin(kod);
+    if (!bulunan) {
       hata.textContent = 'PIN hatalı.';
       girdi.value = '';
       girdi.focus();
       return;
     }
-
+    mevcutKullanici = bulunan;
+    navYetkisiniUygula();
+    localStorage.setItem('cache_kullanici_id', bulunan.id);
     localStorage.setItem('pin_dogrulandi', String(Date.now()));
     ekran.remove();
-    bekleyenRenderiBosalt();
+    // Giris ANINDA ekran mutlaka tazelenir. Once yalnizca bekleyenRenderiBosalt()
+    // cagriliyordu; o da SADECE bekleyen bir render borcu varsa render ediyordu.
+    // Borc yokken (cevrimdisi cihaz, onbellekten acilis) render() hic calismaz ve
+    // ust basliktaki kullanici etiketi ile alt navigasyon yetkisi eski/gizli kalirdi.
+    // Nav dugmesi tiklamasindaki desenin aynisi: ekran burada guncellendigi icin
+    // bekleyen render borcu da KAPANIR.
+    renderBekliyor = false;
+    render();
   }
 
   document.getElementById('pinOnayBtn').addEventListener('click', onayla);
   girdi.addEventListener('keydown', e => { if (e.key === 'Enter') onayla(); });
+  pinEkraniVeriDurumunuTazele();
 }
 
-async function pinDegistir() {
-  if (pinOzeti) {
-    const eski = (prompt('Mevcut PIN:') || '').trim();
-    if (!eski) return;
-    if (await sha256(eski) !== pinOzeti) { alert('Mevcut PIN hatalı.'); return; }
+// db.ref('users') dinleyicisi en az bir kez cevap verdi mi? "Veri henuz gelmedi"
+// ile "sunucu BOS dondu" ayrimi buna dayanir; ikisine ayni mesaji yazmak
+// kullaniciyi yanlis bilgilendirirdi.
+let usersSunucudanGeldi = false;
+
+// Bos users ile PIN ekraninda kalan kullaniciya kacis yolu acilmadan once
+// beklenen sure. Acilis kapisindaki gecici yukleme penceresinin tek dokunusla
+// atlanabilir olmamasi icin var.
+const PIN_BEKLEME_KACIS_SURESI = 4000;
+let pinKacisSayaci = null;
+
+// Kullanici listesi gelmeden PIN denenmesin: dugme beklemede tutulur ve alt
+// yazi DURUMU OLDUGU GIBI soyler. users dinleyicisi veriyi getirince yeniden
+// cagrilir ve ekran normale doner.
+//
+// KACIS YOLU: acilis kapisindan acilan ekranda Vazgec dugmesi YOK. users bos
+// gelirse Gir dugmesi devre disi kalir ve Enter yolu da bos-users dalinda
+// takilir — ekran cikissiz bir perdeye donusurdu. Ek 2 ayni olayda (dis silme
+// ya da okuma izni kaybi) GIRISLI kullaniciyi bilerek serbest birakiyor;
+// girissiz kullanici da serbest birakilmalidir, yoksa iki duzeltme ters yone
+// caliser. Kacis yolu bu yuzden burada olusturulur.
+function pinKacisSayaciniDurdur() {
+  if (pinKacisSayaci) { clearTimeout(pinKacisSayaci); pinKacisSayaci = null; }
+}
+
+function pinEkraniVeriDurumunuTazele() {
+  const ekran = document.getElementById('pinEkrani');
+  if (!ekran) { pinKacisSayaciniDurdur(); return; }
+  const bos = Object.keys(users).length === 0;
+  const btn = ekran.querySelector('#pinOnayBtn');
+  const alt = ekran.querySelector('.alt');
+  if (btn) { btn.disabled = bos; btn.style.opacity = bos ? '.5' : ''; }
+  if (alt) alt.textContent = !bos
+    ? 'Devam etmek için PIN gir'
+    : (usersSunucudanGeldi
+        ? 'Sunucuda tanımlı kullanıcı yok — PIN sorulamıyor.'
+        : 'Kullanıcı listesi yükleniyor…');
+  if (!bos) {
+    // Ekran artik CEVAPLANABILIR: gecici kacis yolu ARTIK kalmamali, yoksa
+    // sorulabilir bir PIN ekrani tek dokunusla atlanabilirdi. En ulasilabilir
+    // yol bir yaris degil: sunucu bos dondu -> Vazgec acildi -> yonetici users'i
+    // geri yazdi -> ekran iyilesti, dugme kaldi. Etiketten acilan ekranin
+    // Vazgec'i KALIR; o dugme kacis artigi degil, ekranin dogal parcasi.
+    if (ekran.dataset.vazgecilebilir !== '1') {
+      const kacis = ekran.querySelector('#pinVazgecBtn');
+      if (kacis) kacis.remove();
+    }
+    pinKacisSayaciniDurdur();
+    return;
   }
-  const yeni = (prompt('Yeni PIN (4 rakam):') || '').trim();
-  if (!/^\d{4}$/.test(yeni)) { alert('PIN 4 rakam olmalı.'); return; }
-  const ozet = await sha256(yeni);
-  // Cevrimdisiyken set() sozu cozulmez; beklenirse "PIN güncellendi" mesaji hic
-  // cikmaz ve fonksiyon sessizce donar. Once yerel durum, sonra ates-unut.
-  pinOzeti = ozet;
-  localStorage.setItem('cache_pin_hash', ozet);
-  localStorage.setItem('pin_dogrulandi', String(Date.now()));
-  db.ref('settings/pinHash').set(ozet)
-    .catch(e => console.warn('PIN sunucuya yazilamadi', e));
-  alert('PIN güncellendi.');
+  // Sunucu BOS dondu: eslesecek hicbir PIN yok, beklemenin anlami yok.
+  if (usersSunucudanGeldi) { pinKacisSayaciniDurdur(); pinEkraniKacisYoluEkle(ekran); return; }
+  // Henuz cevap yok: kisa bir sure beklenir, gelmezse yine de cikis acilir.
+  // Sayac BIR KEZ kurulur. Onceden kosulsuz clearTimeout + yeniden kurma vardi;
+  // onayla()'nin bos-users dali da buraya girdigi icin, sikisan kullanicinin en
+  // olasi refleksi (4 hane yazip Enter'a basmak) kendi cikisini SURESIZ
+  // erteliyordu — duzeltmenin amacina ters. Bekleme yalnizca gercekten yeni bir
+  // bekleme baslarken kurulur.
+  if (pinKacisSayaci) return;
+  pinKacisSayaci = setTimeout(() => {
+    pinKacisSayaci = null;
+    const e2 = document.getElementById('pinEkrani');
+    if (!e2 || Object.keys(users).length > 0) return;
+    const alt2 = e2.querySelector('.alt');
+    if (alt2) alt2.textContent = 'Kullanıcı listesi alınamadı — PIN sorulamıyor.';
+    pinEkraniKacisYoluEkle(e2);
+  }, PIN_BEKLEME_KACIS_SURESI);
+}
+
+function pinEkraniKacisYoluEkle(ekran) {
+  if (ekran.querySelector('#pinVazgecBtn')) return;   // zaten var
+  const btn = document.createElement('button');
+  btn.id = 'pinVazgecBtn';
+  btn.className = 'ikincil';
+  btn.textContent = 'Vazgeç';
+  btn.addEventListener('click', () => ekran.remove());
+  ekran.appendChild(btn);
+}
+
+// Ust basliktaki etiketin isleyicisi. Etiket iki durum tasir: girisli kullanici
+// ("👤 Ad" -> cikis) ve kimliksiz acilis ("👤 Giris yap" -> giris).
+// Acilis kapisi karar veremediginde (cevrimdisi ilk acilis) mevcutKullanici null
+// kalir ve uygulama personel yetkisiyle acilir; o durumda cikilacak bir oturum
+// yoktur, onay sorulmadan dogrudan giris akisi baslatilir. Bu dal olmadan
+// kimliksiz acilan cihazda giris yapmanin TEK yolu sayfayi yeniden yuklemekti.
+function kullaniciCikisYap() {
+  if (!mevcutKullanici) { pinEkraniniGoster(true); return; }
+  if (!confirm('Çıkış yapılsın mı?')) return;
+  localStorage.removeItem('pin_dogrulandi');
+  localStorage.removeItem('cache_kullanici_id');
+  location.reload();
 }
 
 const DEFAULT_DEPOTS = {
@@ -396,7 +519,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v20';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v27';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -426,14 +549,18 @@ function prodMap() {
 }
 
 function renderDepotList() {
+  const yoneticiMi = !!mevcutKullanici && mevcutKullanici.rol === 'yonetici';
   let html = '<div class="depot-grid">';
   for (const id of Object.keys(depots)) {
     const items = stock[id] || {};
     const codes = Object.keys(items).filter(k => items[k] > 0);
     const totalUnits = codes.reduce((s,k) => s + (items[k]||0), 0);
+    const adAlani = yoneticiMi
+      ? `<input value="${escapeHtml(depots[id])}" maxlength="${DEPO_ADI_MAX}" data-eylem="depoAdiDegistir" data-depo="${escapeHtml(id)}">`
+      : `<span>${escapeHtml(depots[id])}</span>`;
     html += `<div class="depot-card" data-eylem="depoAc" data-depo="${escapeHtml(id)}">
       <div class="name" onclick="event.stopPropagation()">
-        <input value="${escapeHtml(depots[id])}" maxlength="${DEPO_ADI_MAX}" data-eylem="depoAdiDegistir" data-depo="${escapeHtml(id)}">
+        ${adAlani}
       </div>
       <div class="stats">
         <div class="num">${codes.length}</div>
@@ -456,7 +583,15 @@ function openDepot(id) {
 // cevirebilirdi. Iki giris noktasinda da zorlanir.
 const DEPO_ADI_MAX = 40;
 
+// Kullanici adi uzunluk siniri — DEPO_ADI_MAX ile ayni desen, ayni gerekce:
+// sinir yalnizca kullaniciEkle'de olsaydi kisa adla eklenip kullaniciDuzenle
+// ile uzatilabilirdi. Iki giris noktasinda da zorlanir. Ust basliktaki
+// #kullanici-etiket ayrica CSS ile kirpilir; bu sinir veriyi, kirpma gorunumu
+// korur — biri digerinin yerine gecmez.
+const KULLANICI_ADI_MAX = 40;
+
 function renameDepot(id, val) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
   // Sinir yalnizca kullanicinin GERCEKTEN yazdigi degere uygulanir. Kutu
   // bosaltilip varsayilana/mevcut ada dusulduyse (asagidaki fallback), o ad
   // zaten kayitliydi — belki bu sinir eklenmeden once, 40 karakterden uzun.
@@ -655,6 +790,7 @@ function renderReportBody() {
 }
 
 function exportReportCsv() {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
   const pm = prodMap();
   const depotIds = Object.keys(depots);
 
@@ -820,7 +956,7 @@ function renderHistoryBody() {
     html += `<div class="tx-row${geriAlinmis ? ' tx-reverted' : ''}">
       <div class="tx-top">${badge}${isaret}<span style="font-size:13px;font-weight:700;">${fmtNum(tx.miktar)} ${escapeHtml(tx.birim||'')}</span></div>
       <div class="tx-name">${escapeHtml(tx.ad)}</div>
-      <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+escapeHtml(tx.note) : ''}${pending ? ' &middot; <span style=\'color:#c62828;font-weight:600;\'>gönderiliyor...</span>' : ''}</div>
+      <div class="tx-meta">${desc} &middot; ${dateStr}${tx.note ? ' &middot; '+escapeHtml(tx.note) : ''}${tx.kullaniciAdi ? ' &middot; '+escapeHtml(tx.kullaniciAdi) : ''}${pending ? ' &middot; <span style=\'color:#c62828;font-weight:600;\'>gönderiliyor...</span>' : ''}</div>
       ${dugme}
     </div>`;
   });
@@ -851,19 +987,26 @@ function renderSettings() {
       <button class="ayar-btn" onclick="urunEkle()">+ Ürün Ekle</button></div>
   </div>`;
 
-  html += `<div class="ayar-blok"><h3>Güvenlik</h3>
-    <div class="ayar-satir"><span>Giriş PIN'i</span>
-      <button class="ayar-btn" onclick="pinDegistir()">${pinOzeti ? 'Değiştir' : 'Belirle'}</button></div>
-    <div class="ayar-not">PIN yalnızca telefonu eline alan birinin uygulama üzerinden kayıt
-    değiştirmesini engeller. Veritabanı adresini bilen biri uygulamayı hiç açmadan, PIN'i
-    hiç görmeden veriyi <strong>okuyabilir, değiştirebilir ve silebilir</strong> — bu, PIN'in
-    kapatamayacağı bir açıktır ve kapatmak için Firebase kimlik doğrulaması ve güvenlik
-    kuralları gerekir.</div>
-  </div>`;
-
-  html += `<div class="ayar-blok"><h3>Cihaz</h3>
-    <div class="ayar-satir"><span>PIN hatırlama</span>
-      <button class="ayar-btn tehlike" onclick="localStorage.removeItem('pin_dogrulandi'); location.reload();">Sıfırla</button></div>
+  html += `<div class="ayar-blok"><h3>Kullanıcılar</h3>`;
+  Object.keys(users).forEach(id => {
+    const u = users[id];
+    html += `<div class="ayar-satir">
+      <span>${escapeHtml(u.ad)} <span style="color:#888;font-size:12px;">(${u.rol === 'yonetici' ? 'yönetici' : 'personel'})</span></span>
+      <span>
+        <button class="ayar-btn" data-eylem="kullaniciDuzenle" data-kullanici="${escapeHtml(id)}">Düzenle</button>
+        <button class="ayar-btn tehlike" data-eylem="kullaniciSil" data-kullanici="${escapeHtml(id)}">Sil</button>
+      </span>
+    </div>`;
+  });
+  // Plan bu dugmeyi satir ici onclick ile bagliyordu; kod tabaninin XSS kurali
+  // (satir ici isleyici yok, data-* + delege dinleyici) geregi cevrildi.
+  html += `<div class="ayar-satir"><span></span>
+    <button class="ayar-btn" data-eylem="kullaniciEkle">+ Kullanıcı Ekle</button></div>`;
+  html += `<div class="ayar-not">PIN yalnızca telefonu eline alan birinin uygulama üzerinden kayıt
+  değiştirmesini engeller. Veritabanı adresini bilen biri uygulamayı hiç açmadan, PIN'i
+  hiç görmeden veriyi <strong>okuyabilir, değiştirebilir ve silebilir</strong> — bu, PIN'in
+  kapatamayacağı bir açıktır ve kapatmak için Firebase kimlik doğrulaması ve güvenlik
+  kuralları gerekir.</div>
   </div>`;
 
   html += `<div class="ayar-blok"><h3>Uygulama</h3>
@@ -876,6 +1019,7 @@ function renderSettings() {
 }
 
 function depoEkle() {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
   const ad = (prompt('Yeni deponun adı:') || '').trim();
   if (!ad) return;
   if (ad.length > DEPO_ADI_MAX) {
@@ -900,7 +1044,109 @@ function depoEkle() {
   render();
 }
 
+async function kullaniciEkle() {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  const ad = (prompt('Yeni kullanıcının adı:') || '').trim();
+  if (!ad) return;
+  if (ad.length > KULLANICI_ADI_MAX) {
+    alert(`Kullanıcı adı en fazla ${KULLANICI_ADI_MAX} karakter olabilir (girilen: ${ad.length}).\n\nKullanıcı eklenmedi.`);
+    return;
+  }
+  if (Object.values(users).some(u => String(u.ad).toLowerCase() === ad.toLowerCase())) {
+    alert('Bu adda bir kullanıcı zaten var.');
+    return;
+  }
+  const rolGirdi = (prompt('Rol — yonetici / personel:', 'personel') || '').trim().toLowerCase();
+  if (!['yonetici', 'personel'].includes(rolGirdi)) { alert('Rol "yonetici" ya da "personel" olmalı.'); return; }
+  const pin = (prompt('4 haneli PIN:') || '').trim();
+  if (!/^\d{4}$/.test(pin)) { alert('PIN 4 rakam olmalı.'); return; }
+  const pinHash = await sha256(pin);
+  // Ayni PIN'e sahip ikinci bir kullanici IZ KAYDININ TAMAMINI curutur:
+  // kullaniciEslesenPin, users icinde ILK eslesen kaydi dondurur. Yeni kullanici
+  // kendi PIN'iyle girdigini sanip BASKA birinin kimligiyle oturum acar — o
+  // kisinin ROLUNU de devralir (personel, yonetici olabilir) ve tum islemleri
+  // o kisinin adina kaydolur.
+  // Uyari hangi kullanicinin PIN'i oldugunu SOYLEMEZ: soylemek, ekranin basindaki
+  // yoneticiye baskasinin PIN'ini deneme-yanilma ile dogrulama imkani verirdi.
+  if (Object.values(users).some(u => u.pinHash === pinHash)) {
+    alert('Bu PIN başka bir kullanıcıda kullanılıyor. Lütfen başka bir PIN seçin.');
+    return;
+  }
+  const id = 'kullanici_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  users[id] = { ad, pinHash, rol: rolGirdi };
+  db.ref('users/' + id).set({ ad, pinHash, rol: rolGirdi })
+    .catch(e => console.warn('yeni kullanici sunucuya yazilamadi', e));
+  saveCache();
+  render();
+}
+
+async function kullaniciDuzenle(id) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  const kullanici = users[id];
+  if (!kullanici) return;
+  const yeniAd = (prompt('Ad:', kullanici.ad) || '').trim();
+  if (!yeniAd) return;
+  if (yeniAd.length > KULLANICI_ADI_MAX) {
+    alert(`Kullanıcı adı en fazla ${KULLANICI_ADI_MAX} karakter olabilir (girilen: ${yeniAd.length}).\n\nKullanıcı değiştirilmedi.`);
+    return;
+  }
+  if (Object.keys(users).some(k => k !== id && String(users[k].ad).toLowerCase() === yeniAd.toLowerCase())) {
+    alert('Bu adda başka bir kullanıcı zaten var.');
+    return;
+  }
+  const yeniRol = (prompt('Rol — yonetici / personel:', kullanici.rol) || '').trim().toLowerCase();
+  if (!['yonetici', 'personel'].includes(yeniRol)) { alert('Rol "yonetici" ya da "personel" olmalı.'); return; }
+  if (yeniRol !== 'yonetici' && kullanici.rol === 'yonetici') {
+    const yoneticiSayisi = Object.values(users).filter(u => u.rol === 'yonetici').length;
+    if (yoneticiSayisi <= 1) { alert('Son yönetici personele düşürülemez — önce başka bir yönetici ekleyin.'); return; }
+  }
+  const yeniPinGirdi = (prompt('Yeni PIN (4 rakam) — değiştirmemek için boş bırak:') || '').trim();
+  let pinHash = kullanici.pinHash;
+  if (yeniPinGirdi) {
+    if (!/^\d{4}$/.test(yeniPinGirdi)) { alert('PIN 4 rakam olmalı.'); return; }
+    pinHash = await sha256(yeniPinGirdi);
+    // kullaniciEkle'deki ayni gerekce. KENDI kaydi haric tutulur: kullanici
+    // kendi mevcut PIN'ini yeniden yazabilmeli, bu bir cakisma degildir.
+    if (Object.keys(users).some(k => k !== id && users[k].pinHash === pinHash)) {
+      alert('Bu PIN başka bir kullanıcıda kullanılıyor. Lütfen başka bir PIN seçin.');
+      return;
+    }
+  }
+  users[id] = { ad: yeniAd, pinHash, rol: yeniRol };
+  db.ref('users/' + id).set({ ad: yeniAd, pinHash, rol: yeniRol })
+    .catch(e => console.warn('kullanici guncellemesi sunucuya yazilamadi', e));
+  // navYetkisiniUygula() SART: kendini personele dusuren yoneticide render()
+  // tek basina alt navigasyonu tazelemiyordu — mevcutKullanici.rol 'personel'
+  // olmasina ragmen dort sekme gorunur kaliyor, ancak users dinleyicisi
+  // tetiklendiginde bire dusuyordu. Cevrimdisi cihazda o dinleyici hic
+  // tetiklenmez ve sekmeler kalici olarak yanlis gorunur.
+  if (mevcutKullanici.id === id) {
+    mevcutKullanici = { id, ad: yeniAd, pinHash, rol: yeniRol };
+    navYetkisiniUygula();
+  }
+  saveCache();
+  render();
+}
+
+function kullaniciSil(id) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  const kullanici = users[id];
+  if (!kullanici) return;
+  if (mevcutKullanici.id === id) { alert('Şu an giriş yapmış olduğunuz hesabı silemezsiniz.'); return; }
+  if (kullanici.rol === 'yonetici') {
+    const yoneticiSayisi = Object.values(users).filter(u => u.rol === 'yonetici').length;
+    if (yoneticiSayisi <= 1) { alert('Son yönetici silinemez.'); return; }
+  }
+  if (!confirm(`"${kullanici.ad}" silinsin mi?`)) return;
+  delete users[id];
+  db.ref('users/' + id).remove()
+    .catch(e => console.warn('kullanici sunucudan silinemedi', e));
+  saveCache();
+  render();
+}
+
 function depoSil(id) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
   if (DEFAULT_DEPOTS[id]) { alert('Varsayılan depolar silinemez.'); return; }
   const dolu = Object.values(stock[id] || {}).some(v => v !== 0);
   if (dolu) { alert('Bu depoda stok var. Önce stoğu boşalt ya da başka depoya aktar.'); return; }
@@ -916,6 +1162,7 @@ function depoSil(id) {
 }
 
 function urunEkle() {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
   const kod = (prompt('Ürün kodu (örn: ICB09000001):') || '').trim().toUpperCase();
   if (!kod) return;
   if (!/^[A-Z0-9_-]{3,32}$/.test(kod)) { alert('Ürün kodu yalnızca büyük harf, rakam, - ve _ içerebilir (3-32 karakter).'); return; }
@@ -1000,9 +1247,34 @@ function urunuYaz(kod, kayit, kontrolYapilamadi) {
   }
 }
 
+// Personel yalnizca Depolar sekmesini gorur/kullanir — alt navigasyonda
+// diger uc dugme hic render edilmez (arayuz katmani). Fonksiyon katmani
+// (asagidaki alti fonksiyona eklenen rol kontrolu) ayni siniri, konsoldan
+// dogrudan cagrilsa bile korur.
+function navYetkisiniUygula() {
+  const yoneticiMi = !!mevcutKullanici && mevcutKullanici.rol === 'yonetici';
+  document.querySelectorAll('nav.bottom button').forEach(btn => {
+    btn.style.display = (btn.dataset.tab === 'depolar' || yoneticiMi) ? '' : 'none';
+  });
+  if (!yoneticiMi && currentTab !== 'depolar') {
+    currentTab = 'depolar';
+    document.querySelectorAll('nav.bottom button').forEach(b => b.classList.remove('active'));
+    const depolarBtn = document.querySelector('nav.bottom button[data-tab="depolar"]');
+    if (depolarBtn) depolarBtn.classList.add('active');
+  }
+}
+
 function render() {
   const hs = document.getElementById('header-sub');
   if (hs) hs.textContent = Object.keys(depots).length + ' depo · Alibey Club';
+  const ke = document.getElementById('kullaniciEtiketi');
+  if (ke) {
+    // Kimliksiz acilista etiket GIZLENMEZ: gizlenirse (nav de yalnizca Depolar
+    // oldugundan) kullanicinin giris yapabilecegi hicbir arayuz ogesi kalmiyor,
+    // tek cikis yolu sayfayi yeniden yuklemek oluyordu.
+    ke.style.display = '';
+    ke.textContent = mevcutKullanici ? '👤 ' + mevcutKullanici.ad : '👤 Giriş yap';
+  }
   if (currentTab === 'depolar') {
     if (openDepotDetail) renderDepotDetail();
     else renderDepotList();
@@ -1071,6 +1343,10 @@ document.addEventListener('click', olay => {
   else if (eylem === 'geriAl') geriAl(hedef.dataset.tx);
   else if (eylem === 'depoSil') depoSil(hedef.dataset.depo);
   else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
+  else if (eylem === 'kullaniciCikis') kullaniciCikisYap();
+  else if (eylem === 'kullaniciEkle') kullaniciEkle();
+  else if (eylem === 'kullaniciDuzenle') kullaniciDuzenle(hedef.dataset.kullanici);
+  else if (eylem === 'kullaniciSil') kullaniciSil(hedef.dataset.kullanici);
 });
 
 document.addEventListener('change', olay => {
@@ -1090,10 +1366,12 @@ function loadCache() {
     const s = localStorage.getItem('cache_stock');
     const t = localStorage.getItem('cache_tx');
     const c = localStorage.getItem('cache_custom');
+    const u = localStorage.getItem('cache_users');
     if (d) depots = {...DEFAULT_DEPOTS, ...JSON.parse(d)};
     if (s) stock = JSON.parse(s);
     if (t) transactions = JSON.parse(t);
     if (c) customProducts = JSON.parse(c);
+    if (u) users = JSON.parse(u);
   } catch(e) {}
 }
 // Onbellege sigmayan kayitlar kirpilirken atilanlar en ESKILER olmali.
@@ -1117,6 +1395,7 @@ function saveCache() {
     localStorage.setItem('cache_stock', JSON.stringify(stock));
     localStorage.setItem('cache_tx', JSON.stringify(enYeniIslemler(300)));
     localStorage.setItem('cache_custom', JSON.stringify(customProducts));
+    localStorage.setItem('cache_users', JSON.stringify(users));
   } catch(e) {
     // Onbellek yazilamadi - ayni localStorage kotasini paylasan kuyruk da
     // yazamayacak demektir. Sessizce yutmak yerine zaten var olan "cihaz
@@ -1133,27 +1412,29 @@ loadCache();
 // Her dalda render() ile onu orten ekran ayni senkron blokta calisir; arada
 // icerigin tiklanabildigi bir pencere olusmaz.
 if (cihazDogrulanmisMi()) {
-  render();                       // cihaz taze dogrulanmis: gecikme yok
-} else if (pinOzeti) {
+  render();                          // cihaz + kullanici taze dogrulanmis: gecikme yok
+  navYetkisiniUygula();
+} else if (Object.keys(users).length > 0) {
   render();
-  pinEkraniniGoster('giris');     // ozet onbellekte: karar zaten verilmis
+  navYetkisiniUygula();
+  pinEkraniniGoster();                // onbellekte en az bir kullanici var: PIN sorulabilir
 } else {
-  // Onbellekte ozet yok — sunucuya sorulur. Beklerken icerik perdeyle ortulur.
+  // Onbellekte hic kullanici yok — sunucuya sorulur. Beklerken icerik perdeyle ortulur.
   pinPerdesiniGoster();
-  pinOzetiSunucuKontrolu().then(durum => {
+  kullaniciSunucuKontrolu().then(durum => {
     // try/finally SART: render() ya da pinEkraniniGoster() istisna atarsa
     // perde hic kaldirilmaz ve kullanici kalici mavi ekranda kalir — PWA'da
     // adres cubugu olmadigi icin cikisi da zor. Bu, C4'un ta kendisinin
     // sekli. Perde HER kosulda kalkar; istisna yine de yukari gider.
     try {
       render();
+      navYetkisiniUygula();
       if (!cihazDogrulanmisMi()) {
-        // 'bilinmiyor' olsa bile ozet bu arada canli dinleyiciden gelmis
-        // olabilir; gelmisse PIN sorulabilir, cunku dogrulama artik YEREL.
-        if (durum === 'var' || (durum === 'bilinmiyor' && pinOzeti)) pinEkraniniGoster('giris');
-        else if (durum === 'yok') pinEkraniniGoster('kurulum');
-        // Geriye kalan tek hal: sunucuya sorulamadi VE onbellekte ozet yok.
-        // Sorulacak bir PIN yok — KILITLEME, uygulamayi ac.
+        if (durum === 'var') pinEkraniniGoster();
+        // 'yok' (hic kullanici tanimli degil) ya da 'bilinmiyor' (sunucuya
+        // sorulamadi): sorulacak bir PIN yok — KILITLEME, uygulamayi ac.
+        // mevcutKullanici null kalir, Gorev 4'teki yetki kontrolu bunu
+        // en dusuk (personel) yetkiye esdeger sayar.
       }
     } finally {
       // Perde en son kaldirilir ki PIN ekrani eklenirken arada icerik gorunmesin.
@@ -1746,7 +2027,7 @@ updateOfflineBar();
 // firebaseBagli'yi gercek bir sinyalle besler — bu dinleyici olmadan degisken
 // kalici olarak true kalir ve "baglanti oluyken tur baslatma" hizli yollari
 // (trySyncQueue, urunSunucuKontrolu, tersKayitSunucuKontrolu,
-// pinOzetiSunucuKontrolu haric — o kapi degisken tanimlanmadan calisir)
+// kullaniciSunucuKontrolu haric — o kapi degisken tanimlanmadan calisir)
 // hicbir zaman devreye girmez; zaman asimina dusmeye devam ederler ama
 // gereksiz yere.
 db.ref('.info/connected').on('value', snap => baglantiDurumunuAyarla(snap.val() === true));
@@ -1778,6 +2059,50 @@ db.ref('transactions').limitToLast(300).on('value', snap => {
 
 db.ref('customProducts').on('value', snap => {
   customProducts = snap.val() || {};
+  saveCache();
+  scheduleRender();
+});
+
+db.ref('users').on('value', snap => {
+  users = snap.val() || {};
+  usersSunucudanGeldi = true;
+  // mevcutKullanici GIRIS ANINDA alinmis bir KOPYA. Bu dinleyici users'i
+  // tazeliyordu ama kopyayi tazelemiyordu: yoneticiligi alinan ya da hesabi
+  // silinen bir kullanici, o cihaz yeniden YUKLENENE KADAR tam yonetici
+  // arayuzunu ve fonksiyonlarini koruyordu. Yetkinin geri alinabilmesi icin
+  // kopya her users guncellemesinde sunucudaki kayitla eslenir.
+  if (mevcutKullanici) {
+    const taze = users[mevcutKullanici.id];
+    if (taze) {
+      mevcutKullanici = { id: mevcutKullanici.id, ...taze };
+      navYetkisiniUygula();
+    } else if (Object.keys(users).length > 0) {
+      // Kayit silinmis: oturum dusurulur, cihaz kimligi gecersiz sayilir ve
+      // PIN yeniden sorulur. users dolu oldugu icin eslesecek bir PIN VAR.
+      mevcutKullanici = null;
+      localStorage.removeItem('pin_dogrulandi');
+      localStorage.removeItem('cache_kullanici_id');
+      // Acik islem modali KAPATILIR. Kapatilmazsa modal PIN ekraninin altinda
+      // girilmis degerleriyle duruyordu; baska biri giris yapip o modali
+      // kaydettiginde kayit YANLIS kisinin adina yazilirdi — Gorev 5'in iz
+      // kaydinin tam da onlemek icin var oldugu sey.
+      // closeModal() degil overlayKaldir(): closeModal history.back() ile
+      // overlayAc'in pushState'ini geri sariyor; buraya kullanici gezinmesi
+      // olmadan gelindigi icin dogrudan kaldirma dogru olan.
+      overlayKaldir();
+      navYetkisiniUygula();
+      pinEkraniniGoster();
+    }
+    // users TAMAMEN bos geldiyse oturum DUSURULMEZ. Uygulama uzerinden users'in
+    // bosalmasi mumkun degil (son yonetici ne silinebilir ne dusurulebilir, kimse
+    // kendi hesabini silemez); bos gelmesi ancak disaridan silme ya da okuma
+    // izninin kaybi demektir. O durumda tum cihazlarin oturumunu dusurmek,
+    // eslesecek hicbir PIN kalmadigi icin filoyu topluca kilitlerdi — kodun
+    // her yerindeki "serbest birakma yonunde basarisiz ol" kurali geregi
+    // mevcut oturum oldugu gibi birakilir.
+  }
+  // Acik bir PIN ekrani varsa veri artik geldi: dugme beklemeden cikar.
+  pinEkraniVeriDurumunuTazele();
   saveCache();
   scheduleRender();
 });
@@ -2034,12 +2359,12 @@ function saveTransaction() {
         return;
       }
       if (!stokUyarisiGec(from, kod, miktar, birim)) return;
-      txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId };
+      txRecord = { type: 'transfer', fromDepot: from, toDepot: to, kod, ad, birim, miktar, note, ts: now, localId, kullaniciAdi: mevcutKullanici ? mevcutKullanici.ad : 'Bilinmeyen' };
       deltalar = [[from, kod, -miktar], [to, kod, miktar]];
     } else {
       const depotId = document.getElementById('singleDepot').value;
       if (txType === 'cikis' && !stokUyarisiGec(depotId, kod, miktar, birim)) return;
-      txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId };
+      txRecord = { type: txType, depotId, kod, ad, birim, miktar, note, ts: now, localId, kullaniciAdi: mevcutKullanici ? mevcutKullanici.ad : 'Bilinmeyen' };
       deltalar = [[depotId, kod, txType === 'giris' ? miktar : -miktar]];
     }
 
@@ -2072,6 +2397,7 @@ function saveTransaction() {
 }
 
 function geriAl(id) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
   const tx = transactions.find(t => t.id === id);
   if (!tx) return;
   // Gecmis satirindaki dugme kosuluyla ayni gercek kullanilir
@@ -2149,13 +2475,15 @@ function geriAlDevam(tx, id, kontrolYapilamadi) {
   if (tx.type === 'transfer') {
     ters = { type: 'transfer', fromDepot: tx.toDepot, toDepot: tx.fromDepot,
              kod: tx.kod, ad: tx.ad, birim: tx.birim, miktar: tx.miktar,
-             note: 'Geri alma', ts: simdi, localId, revertOf: id };
+             note: 'Geri alma', ts: simdi, localId, revertOf: id,
+             kullaniciAdi: mevcutKullanici ? mevcutKullanici.ad : 'Bilinmeyen' };
     deltalar = [[tx.toDepot, tx.kod, -tx.miktar], [tx.fromDepot, tx.kod, tx.miktar]];
   } else {
     const tersTur = tx.type === 'giris' ? 'cikis' : 'giris';
     ters = { type: tersTur, depotId: tx.depotId,
              kod: tx.kod, ad: tx.ad, birim: tx.birim, miktar: tx.miktar,
-             note: 'Geri alma', ts: simdi, localId, revertOf: id };
+             note: 'Geri alma', ts: simdi, localId, revertOf: id,
+             kullaniciAdi: mevcutKullanici ? mevcutKullanici.ad : 'Bilinmeyen' };
     deltalar = [[tx.depotId, tx.kod, tersTur === 'giris' ? tx.miktar : -tx.miktar]];
   }
 
