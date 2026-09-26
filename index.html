@@ -131,6 +131,12 @@
     padding: 5px 12px; margin-top: 8px;
   }
   .tx-reverted { opacity: .55; }
+  .gecmis-daha {
+    display: block; width: 100%; margin: 8px 0 4px; padding: 10px;
+    background: #fff; border: 1px solid #ddd; border-radius: 10px;
+    font-size: 13px; font-weight: 600; color: #1565c0;
+  }
+  .gecmis-not { text-align: center; font-size: 12px; color: #999; margin: 8px 0; }
   .tx-revert-badge { background: #f0f0f0; color: #666; }
   .empty-state { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; }
 
@@ -519,7 +525,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v28';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v29';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -867,6 +873,63 @@ let gecmisDepo = 'tumu';
 let gecmisTur = 'tumu';
 let gecmisAralik = '30';   // '7' | '30' | 'tumu'
 
+// Canli dinleyici yalnizca son 300 kaydi tutuyor ve ekran ilk 100 satiri
+// basiyordu: "Tumu" secilse bile bu pencereden eski kayitlar hic gorunmuyordu.
+// Eski kayitlar gerektikce (liste tukendiginde) sunucudan sayfa sayfa cekilir
+// ve canli pencereden AYRI tutulur — transactions dizisine karismazlar, boylece
+// onbellek, geri alma ve kuyruk mantigi bugunku 300'luk pencereyle calismaya
+// devam eder. Eski kayitlarda "Geri al" dugmesi gosterilmez (geriAl yalnizca
+// canli pencereye bakar).
+const GECMIS_SAYFA = 100;
+const ESKI_SAYFA = 300;
+let gecmisGosterim = GECMIS_SAYFA;
+let eskiIslemler = [];           // canli pencereden eski, sunucudan cekilmis kayitlar
+let canliEnEskiAnahtar = null;   // canli penceredeki en kucuk (en eski) push anahtari
+let eskiHepsiYuklendi = false;
+let eskiYukleniyor = false;
+let eskiYuklemeHatasi = false;
+
+function gecmisTumKayitlar() {
+  if (eskiIslemler.length === 0) return transactions;
+  const gorulen = new Set();
+  transactions.forEach(t => { if (t && t.id) gorulen.add(t.id); });
+  return transactions.concat(eskiIslemler.filter(t => !gorulen.has(t.id)));
+}
+
+function eskiImlec() {
+  let enKucuk = canliEnEskiAnahtar;
+  eskiIslemler.forEach(t => { if (enKucuk === null || t.id < enKucuk) enKucuk = t.id; });
+  return enKucuk;
+}
+
+function eskiKayitlariYukle() {
+  if (eskiYukleniyor || eskiHepsiYuklendi) return;
+  const imlec = eskiImlec();
+  if (imlec === null) return;   // canli pencere henuz gelmedi
+  eskiYukleniyor = true;
+  eskiYuklemeHatasi = false;
+  const sorgu = db.ref('transactions').orderByKey().endBefore(imlec).limitToLast(ESKI_SAYFA).once('value');
+  // Cevrimdisiyken once() cevap vermeden bekleyebilir; kullanici sonsuza dek
+  // "yukleniyor" gormesin diye sureli.
+  const zamanAsimi = new Promise((_, red) => setTimeout(() => red(new Error('zaman asimi')), 10000));
+  Promise.race([sorgu, zamanAsimi]).then(snap => {
+    const val = snap.val() || {};
+    const anahtarlar = Object.keys(val);
+    anahtarlar.forEach(k => eskiIslemler.push({ id: k, ...val[k] }));
+    if (anahtarlar.length < ESKI_SAYFA) eskiHepsiYuklendi = true;
+  }).catch(() => {
+    eskiYuklemeHatasi = true;
+  }).then(() => {
+    eskiYukleniyor = false;
+    if (currentTab === 'gecmis') renderHistoryBody();
+  });
+}
+
+function gecmisFiltreDegisti() {
+  gecmisGosterim = GECMIS_SAYFA;
+  renderHistoryBody();
+}
+
 function renderHistory() {
   const depoSecenek = ['<option value="tumu">Tüm depolar</option>']
     .concat(Object.keys(depots).map(id =>
@@ -894,18 +957,30 @@ function renderHistory() {
     </div>` +
     `<div id="historyBody"></div>`;
 
-  document.getElementById('fDepo').addEventListener('change', e => { gecmisDepo = e.target.value; renderHistoryBody(); });
-  document.getElementById('fTur').addEventListener('change', e => { gecmisTur = e.target.value; renderHistoryBody(); });
-  document.getElementById('fAralik').addEventListener('change', e => { gecmisAralik = e.target.value; renderHistoryBody(); });
+  document.getElementById('fDepo').addEventListener('change', e => { gecmisDepo = e.target.value; gecmisFiltreDegisti(); });
+  document.getElementById('fTur').addEventListener('change', e => { gecmisTur = e.target.value; gecmisFiltreDegisti(); });
+  document.getElementById('fAralik').addEventListener('change', e => { gecmisAralik = e.target.value; gecmisFiltreDegisti(); });
 
   renderHistoryBody();
 }
 
-function gecmisiSuz() {
-  const simdi = Date.now();
-  const sinir = gecmisAralik === 'tumu' ? 0 : simdi - Number(gecmisAralik) * 86400000;
+function gecmisSinirZamani() {
+  return gecmisAralik === 'tumu' ? 0 : Date.now() - Number(gecmisAralik) * 86400000;
+}
 
-  return transactions.filter(tx => {
+// Secili aralik yuklu kayitlarla tamamen karsilaniyor mu? En eski yuklu kayit
+// aralik baslangicindan once ise daha eskisini cekmeye gerek yok.
+function gecmisAralikKarsilandi() {
+  if (eskiHepsiYuklendi) return true;
+  const sinir = gecmisSinirZamani();
+  if (sinir === 0) return false;
+  return gecmisTumKayitlar().some(tx => tx && Number(tx.ts) < sinir);
+}
+
+function gecmisiSuz() {
+  const sinir = gecmisSinirZamani();
+
+  return gecmisTumKayitlar().filter(tx => {
     if (tx.ts < sinir) return false;
     if (gecmisTur !== 'tumu' && tx.type !== gecmisTur) return false;
     if (gecmisDepo !== 'tumu') {
@@ -927,7 +1002,7 @@ function gecmisiSuz() {
 // dayanikli kuyruktan gectigi icin bu kendi kendini onarir.
 function geriAlinanIdKumesi() {
   const kume = new Set();
-  transactions.forEach(t => { if (t && t.revertOf) kume.add(t.revertOf); });
+  gecmisTumKayitlar().forEach(t => { if (t && t.revertOf) kume.add(t.revertOf); });
   getQueue().forEach(q => { if (q && q.revertOf) kume.add(q.revertOf); });
   return kume;
 }
@@ -945,15 +1020,35 @@ function renderHistoryBody() {
   const kayitlar = gecmisiSuz();
   const tersKume = geriAlinanIdKumesi();
 
+  // Gosterilecek satir kalmadiysa ve aralik yuklu kayitlarla karsilanmiyorsa
+  // bir sonraki eski sayfa otomatik istenir.
+  const karsilandi = gecmisAralikKarsilandi();
+  if (kayitlar.length <= gecmisGosterim && !karsilandi && !eskiYuklemeHatasi) eskiKayitlariYukle();
+
+  let alt = '';
+  if (kayitlar.length > gecmisGosterim) {
+    alt = `<button class="gecmis-daha" data-eylem="gecmisDahaFazla">Daha fazla göster (${kayitlar.length - gecmisGosterim} kayıt daha)</button>`;
+  } else if (!karsilandi) {
+    alt = eskiYukleniyor
+      ? `<div class="gecmis-not">Eski kayıtlar yükleniyor...</div>`
+      : eskiYuklemeHatasi
+        ? `<div class="gecmis-not">Eski kayıtlar alınamadı (internet?).</div><button class="gecmis-daha" data-eylem="eskiKayitYukle">Tekrar dene</button>`
+        : `<button class="gecmis-daha" data-eylem="eskiKayitYukle">Daha eski kayıtları yükle</button>`;
+  }
+
   if (kayitlar.length === 0) {
     govde.innerHTML = `<div class="empty-state">${
-      transactions.length === 0 ? 'Henüz işlem kaydı yok.' : 'Bu filtrelere uyan işlem yok.'
-    }</div>`;
+      eskiYukleniyor ? 'Kayıtlar yükleniyor...'
+        : transactions.length === 0 ? 'Henüz işlem kaydı yok.' : 'Bu filtrelere uyan işlem yok.'
+    }</div>` + alt;
     return;
   }
 
+  const canliIdler = new Set();
+  transactions.forEach(t => { if (t && t.id) canliIdler.add(t.id); });
+
   let html = '';
-  kayitlar.slice(0, 100).forEach(tx => {
+  kayitlar.slice(0, gecmisGosterim).forEach(tx => {
     const d = new Date(tx.ts);
     const dateStr = d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'});
     let badge, desc;
@@ -970,7 +1065,7 @@ function renderHistoryBody() {
     const pending = tx.localId && getQueue().some(q => q.localId === tx.localId);
     const geriAlmaKaydi = !!tx.revertOf;
     const geriAlinmis = geriAlinmisMi(tx, tersKume);
-    const dugme = (!geriAlmaKaydi && !geriAlinmis && tx.id && !pending)
+    const dugme = (!geriAlmaKaydi && !geriAlinmis && tx.id && !pending && canliIdler.has(tx.id))
       ? `<button class="tx-undo" data-eylem="geriAl" data-tx="${escapeHtml(tx.id)}">Geri al</button>`
       : '';
     const isaret = geriAlinmis ? ' <span class="tx-badge tx-revert-badge">GERİ ALINDI</span>' : '';
@@ -981,7 +1076,7 @@ function renderHistoryBody() {
       ${dugme}
     </div>`;
   });
-  govde.innerHTML = html;
+  govde.innerHTML = html + alt;
 }
 
 function renderSettings() {
@@ -1362,6 +1457,8 @@ document.addEventListener('click', olay => {
   if (eylem === 'depoAc') openDepot(hedef.dataset.depo);
   else if (eylem === 'urunDokun') quickTap(hedef.dataset.depo, hedef.dataset.kod);
   else if (eylem === 'geriAl') geriAl(hedef.dataset.tx);
+  else if (eylem === 'gecmisDahaFazla') { gecmisGosterim += GECMIS_SAYFA; renderHistoryBody(); }
+  else if (eylem === 'eskiKayitYukle') { eskiYuklemeHatasi = false; eskiKayitlariYukle(); renderHistoryBody(); }
   else if (eylem === 'depoSil') depoSil(hedef.dataset.depo);
   else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
   else if (eylem === 'kullaniciCikis') kullaniciCikisYap();
@@ -2073,7 +2170,24 @@ db.ref('stock').on('value', snap => {
 
 db.ref('transactions').limitToLast(300).on('value', snap => {
   const val = snap.val() || {};
-  transactions = Object.keys(val).map(k => ({ id: k, ...val[k] }));
+  const anahtarlar = Object.keys(val);
+  // Yeni kayit geldikce canli pencerenin alt ucu ileri kayar. Eski sayfalar
+  // cekilmisse, pencereden dusen kayitlar eskiIslemler'e aktarilir; yoksa
+  // eski sayfa ile canli pencere arasinda gorunmeyen bir bosluk kalirdi.
+  if (eskiIslemler.length > 0 || eskiHepsiYuklendi) {
+    transactions.forEach(t => {
+      if (t && t.id && !(t.id in val) && !eskiIslemler.some(e => e.id === t.id)) eskiIslemler.push(t);
+    });
+  }
+  if (anahtarlar.length > 0) {
+    const enKucuk = anahtarlar.reduce((a, b) => (b < a ? b : a));
+    // Imlec yalnizca eski sayfa hic cekilmediyse canli pencereyi izler
+    if (eskiIslemler.length === 0 && !eskiHepsiYuklendi) canliEnEskiAnahtar = enKucuk;
+    if (anahtarlar.length < 300 && eskiIslemler.length === 0) eskiHepsiYuklendi = true;
+  } else {
+    eskiHepsiYuklendi = true;
+  }
+  transactions = anahtarlar.map(k => ({ id: k, ...val[k] }));
   saveCache();
   scheduleRender();
 });
