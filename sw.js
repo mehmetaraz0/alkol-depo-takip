@@ -1,4 +1,4 @@
-const CACHE_ADI = 'depo-v28';
+const CACHE_ADI = 'depo-v30';
 
 const KABUK = [
   './',
