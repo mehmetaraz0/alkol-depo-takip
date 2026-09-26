@@ -141,6 +141,16 @@
   .empty-state { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; }
 
   .filtre-satiri { display: flex; gap: 8px; margin-bottom: 10px; }
+  .filtre-satiri input[type=search] {
+    flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px;
+    border: 1px solid #ddd; background: #fff; font-size: 14px;
+  }
+  .filtre-tarih label { flex: 1; min-width: 0; font-size: 11px; color: #777; display: flex; flex-direction: column; gap: 3px; }
+  .filtre-tarih input { padding: 8px; border-radius: 10px; border: 1px solid #ddd; background: #fff; font-size: 13px; min-width: 0; }
+  .filtre-btn { flex: 1; padding: 9px; border-radius: 10px; border: 1px solid #ddd; background: #fff;
+    font-size: 13px; font-weight: 600; color: #1f3864; }
+  .filtre-btn:disabled { opacity: .5; }
+  .gecmis-ozet { font-size: 12px; color: #777; margin: 0 2px 8px; }
   .filtre-satiri select {
     flex: 1; min-width: 0; padding: 9px 8px; border-radius: 10px;
     border: 1px solid #ddd; background: #fff; font-size: 13px;
@@ -525,7 +535,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v29';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v30';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -846,6 +856,10 @@ function exportReportCsv() {
     rows.push([k, name, unit, grup, ...vals, fmtNum(total)]);
   });
 
+  csvIndir(rows, `Stok_Raporu_${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+function csvIndir(rows, dosyaAdi) {
   const csv = rows.map(r => r.map(cell => {
     let s = String(cell).replace(/"/g, '""');
     // Excel/Sheets'te formul olarak calismasin diye =, +, -, @ ile baslayan
@@ -857,12 +871,11 @@ function exportReportCsv() {
     return /[",;\n]/.test(s) ? `"${s}"` : s;
   }).join(';')).join('\r\n');
 
-  const dateStr = new Date().toISOString().slice(0,10);
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Stok_Raporu_${dateStr}.csv`;
+  a.download = dosyaAdi;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -871,7 +884,12 @@ function exportReportCsv() {
 
 let gecmisDepo = 'tumu';
 let gecmisTur = 'tumu';
-let gecmisAralik = '30';   // '7' | '30' | 'tumu'
+let gecmisAralik = '30';   // 'bugun' | '7' | '30' | 'tumu' | 'ozel'
+let gecmisArama = '';        // urun adi / kod / not icinde arar
+let gecmisKullanici = 'tumu';
+let gecmisBaslangic = '';    // 'YYYY-AA-GG' — yalnizca 'ozel' aralikta
+let gecmisBitis = '';
+let gecmisAramaZamanlayici = null;
 
 // Canli dinleyici yalnizca son 300 kaydi tutuyor ve ekran ilk 100 satiri
 // basiyordu: "Tumu" secilse bile bu pencereden eski kayitlar hic gorunmuyordu.
@@ -902,17 +920,20 @@ function eskiImlec() {
   return enKucuk;
 }
 
+let eskiYuklemeSozu = null;
+
 function eskiKayitlariYukle() {
-  if (eskiYukleniyor || eskiHepsiYuklendi) return;
+  if (eskiYukleniyor) return eskiYuklemeSozu;
+  if (eskiHepsiYuklendi) return Promise.resolve();
   const imlec = eskiImlec();
-  if (imlec === null) return;   // canli pencere henuz gelmedi
+  if (imlec === null) return Promise.resolve();   // canli pencere henuz gelmedi
   eskiYukleniyor = true;
   eskiYuklemeHatasi = false;
   const sorgu = db.ref('transactions').orderByKey().endBefore(imlec).limitToLast(ESKI_SAYFA).once('value');
   // Cevrimdisiyken once() cevap vermeden bekleyebilir; kullanici sonsuza dek
   // "yukleniyor" gormesin diye sureli.
   const zamanAsimi = new Promise((_, red) => setTimeout(() => red(new Error('zaman asimi')), 10000));
-  Promise.race([sorgu, zamanAsimi]).then(snap => {
+  eskiYuklemeSozu = Promise.race([sorgu, zamanAsimi]).then(snap => {
     const val = snap.val() || {};
     const anahtarlar = Object.keys(val);
     anahtarlar.forEach(k => eskiIslemler.push({ id: k, ...val[k] }));
@@ -923,6 +944,45 @@ function eskiKayitlariYukle() {
     eskiYukleniyor = false;
     if (currentTab === 'gecmis') renderHistoryBody();
   });
+  return eskiYuklemeSozu;
+}
+
+// Ilk kayda kadar tum gecmisi ceker. Hata olursa false doner.
+async function tumGecmisiYukle() {
+  while (!eskiHepsiYuklendi) {
+    if (eskiImlec() === null) return false;
+    eskiYuklemeHatasi = false;
+    await eskiKayitlariYukle();
+    if (eskiYuklemeHatasi) return false;
+  }
+  return true;
+}
+
+async function gecmisCsvIndir(dugme) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  const eskiYazi = dugme ? dugme.textContent : '';
+  if (dugme) { dugme.disabled = true; dugme.textContent = 'Tüm geçmiş yükleniyor...'; }
+  const tamam = await tumGecmisiYukle();
+  if (dugme) { dugme.disabled = false; dugme.textContent = eskiYazi; }
+  if (!tamam) { alert('Geçmişin tamamı sunucudan alınamadı. İnternet bağlantısını kontrol edip tekrar deneyin.'); return; }
+
+  const tersKume = geriAlinanIdKumesi();
+  const rows = [['Tarih', 'Saat', 'İşlem', 'Kod', 'Ürün', 'Miktar', 'Birim', 'Depo', 'Hedef Depo', 'Kullanıcı', 'Not', 'Durum']];
+  gecmisiSuz().forEach(tx => {
+    const d = new Date(tx.ts);
+    const tur = tx.type === 'giris' ? 'Giriş' : tx.type === 'cikis' ? 'Çıkış' : 'Transfer';
+    const depo = tx.type === 'transfer' ? (depots[tx.fromDepot] || tx.fromDepot) : (depots[tx.depotId] || tx.depotId);
+    const hedefDepo = tx.type === 'transfer' ? (depots[tx.toDepot] || tx.toDepot) : '';
+    const durum = tx.revertOf ? 'Geri alma kaydı' : geriAlinmisMi(tx, tersKume) ? 'Geri alındı' : '';
+    rows.push([
+      d.toLocaleDateString('tr-TR'),
+      d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+      tur, tx.kod || '', tx.ad || '', fmtNum(tx.miktar), tx.birim || '',
+      depo || '', hedefDepo || '', tx.kullaniciAdi || '', tx.note || '', durum
+    ]);
+  });
+  if (currentTab === 'gecmis') renderHistoryBody();
+  csvIndir(rows, `Islem_Gecmisi_${new Date().toISOString().slice(0,10)}.csv`);
 }
 
 function gecmisFiltreDegisti() {
@@ -930,10 +990,26 @@ function gecmisFiltreDegisti() {
   renderHistoryBody();
 }
 
+function gecmisKullaniciAdlari() {
+  const adlar = new Set();
+  Object.values(users).forEach(u => { if (u && u.ad) adlar.add(u.ad); });
+  gecmisTumKayitlar().forEach(tx => { if (tx && tx.kullaniciAdi) adlar.add(tx.kullaniciAdi); });
+  return [...adlar].sort((a, b) => a.localeCompare(b, 'tr'));
+}
+
+function gecmisFiltreAktifMi() {
+  return gecmisDepo !== 'tumu' || gecmisTur !== 'tumu' || gecmisAralik !== '30'
+    || gecmisArama !== '' || gecmisKullanici !== 'tumu';
+}
+
 function renderHistory() {
   const depoSecenek = ['<option value="tumu">Tüm depolar</option>']
     .concat(Object.keys(depots).map(id =>
       `<option value="${escapeHtml(id)}"${gecmisDepo === id ? ' selected' : ''}>${escapeHtml(depots[id])}</option>`))
+    .join('');
+  const kullaniciSecenek = ['<option value="tumu">Tüm kullanıcılar</option>']
+    .concat(gecmisKullaniciAdlari().map(ad =>
+      `<option value="${escapeHtml(ad)}"${gecmisKullanici === ad ? ' selected' : ''}>${escapeHtml(ad)}</option>`))
     .join('');
 
   const sec = (deger, mevcut, etiket) =>
@@ -942,6 +1018,9 @@ function renderHistory() {
   app.innerHTML =
     `<div class="section-title">İşlem Geçmişi</div>` +
     `<div class="filtre-satiri">
+      <input id="fArama" type="search" placeholder="Ürün, kod ya da not ara..." value="${escapeHtml(gecmisArama)}" autocomplete="off">
+    </div>` +
+    `<div class="filtre-satiri">
       <select id="fDepo">${depoSecenek}</select>
       <select id="fTur">
         ${sec('tumu', gecmisTur, 'Tüm işlemler')}
@@ -949,23 +1028,85 @@ function renderHistory() {
         ${sec('cikis', gecmisTur, 'Çıkış')}
         ${sec('transfer', gecmisTur, 'Transfer')}
       </select>
+    </div>` +
+    `<div class="filtre-satiri">
       <select id="fAralik">
+        ${sec('bugun', gecmisAralik, 'Bugün')}
         ${sec('7', gecmisAralik, 'Son 7 gün')}
         ${sec('30', gecmisAralik, 'Son 30 gün')}
-        ${sec('tumu', gecmisAralik, 'Tümü')}
+        ${sec('tumu', gecmisAralik, 'Tüm geçmiş')}
+        ${sec('ozel', gecmisAralik, 'Tarih seç...')}
       </select>
+      <select id="fKullanici">${kullaniciSecenek}</select>
     </div>` +
+    (gecmisAralik === 'ozel'
+      ? `<div class="filtre-satiri filtre-tarih">
+          <label>Başlangıç<input id="fBaslangic" type="date" value="${escapeHtml(gecmisBaslangic)}"></label>
+          <label>Bitiş<input id="fBitis" type="date" value="${escapeHtml(gecmisBitis)}"></label>
+        </div>`
+      : '') +
+    `<div class="filtre-satiri">
+      ${gecmisFiltreAktifMi() ? '<button class="filtre-btn" data-eylem="gecmisTemizle">Filtreleri temizle</button>' : ''}
+      <button class="filtre-btn" data-eylem="gecmisCsv">Excel'e aktar (CSV)</button>
+    </div>` +
+    `<div id="gecmisOzet" class="gecmis-ozet"></div>` +
     `<div id="historyBody"></div>`;
 
   document.getElementById('fDepo').addEventListener('change', e => { gecmisDepo = e.target.value; gecmisFiltreDegisti(); });
   document.getElementById('fTur').addEventListener('change', e => { gecmisTur = e.target.value; gecmisFiltreDegisti(); });
-  document.getElementById('fAralik').addEventListener('change', e => { gecmisAralik = e.target.value; gecmisFiltreDegisti(); });
+  document.getElementById('fKullanici').addEventListener('change', e => { gecmisKullanici = e.target.value; gecmisFiltreDegisti(); });
+  document.getElementById('fAralik').addEventListener('change', e => {
+    gecmisAralik = e.target.value;
+    // Tarih kutulari yalnizca 'ozel'de var: arayuz yeniden kurulur
+    gecmisGosterim = GECMIS_SAYFA;
+    renderHistory();
+  });
+  const bas = document.getElementById('fBaslangic');
+  if (bas) bas.addEventListener('change', e => { gecmisBaslangic = e.target.value; gecmisFiltreDegisti(); });
+  const bit = document.getElementById('fBitis');
+  if (bit) bit.addEventListener('change', e => { gecmisBitis = e.target.value; gecmisFiltreDegisti(); });
+  // Her tusta degil, yazma durunca suzulur
+  document.getElementById('fArama').addEventListener('input', e => {
+    clearTimeout(gecmisAramaZamanlayici);
+    const deger = e.target.value;
+    gecmisAramaZamanlayici = setTimeout(() => { gecmisArama = deger.trim(); gecmisFiltreDegisti(); }, 250);
+  });
 
   renderHistoryBody();
 }
 
+function gecmisFiltreleriTemizle() {
+  gecmisDepo = 'tumu'; gecmisTur = 'tumu'; gecmisAralik = '30';
+  gecmisArama = ''; gecmisKullanici = 'tumu'; gecmisBaslangic = ''; gecmisBitis = '';
+  gecmisGosterim = GECMIS_SAYFA;
+  renderHistory();
+}
+
+// 'YYYY-AA-GG' -> o gunun YEREL saatle baslangici (ms). Gecersizse null.
+function gunBaslangici(tarih) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tarih || '');
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+}
+
+// Secili aralik: {bas, bit} ms; bas=0 alt sinir yok, bit=Infinity ust sinir yok.
+function gecmisZamanAraligi() {
+  const simdi = Date.now();
+  if (gecmisAralik === 'tumu') return { bas: 0, bit: Infinity };
+  if (gecmisAralik === 'bugun') {
+    const d = new Date(); d.setHours(0, 0, 0, 0);
+    return { bas: d.getTime(), bit: Infinity };
+  }
+  if (gecmisAralik === 'ozel') {
+    const b = gunBaslangici(gecmisBaslangic);
+    const s = gunBaslangici(gecmisBitis);
+    return { bas: b === null ? 0 : b, bit: s === null ? Infinity : s + 86400000 - 1 };
+  }
+  return { bas: simdi - Number(gecmisAralik) * 86400000, bit: Infinity };
+}
+
 function gecmisSinirZamani() {
-  return gecmisAralik === 'tumu' ? 0 : Date.now() - Number(gecmisAralik) * 86400000;
+  return gecmisZamanAraligi().bas;
 }
 
 // Secili aralik yuklu kayitlarla tamamen karsilaniyor mu? En eski yuklu kayit
@@ -978,10 +1119,18 @@ function gecmisAralikKarsilandi() {
 }
 
 function gecmisiSuz() {
-  const sinir = gecmisSinirZamani();
+  const { bas, bit } = gecmisZamanAraligi();
+  const arama = aramaNormali(gecmisArama);
 
   return gecmisTumKayitlar().filter(tx => {
-    if (tx.ts < sinir) return false;
+    if (!tx) return false;
+    const ts = Number(tx.ts) || 0;
+    if (ts < bas || ts > bit) return false;
+    if (gecmisKullanici !== 'tumu' && (tx.kullaniciAdi || '') !== gecmisKullanici) return false;
+    if (arama) {
+      const metin = aramaNormali([tx.ad, tx.kod, tx.note].filter(Boolean).join(' '));
+      if (!metin.includes(arama)) return false;
+    }
     if (gecmisTur !== 'tumu' && tx.type !== gecmisTur) return false;
     if (gecmisDepo !== 'tumu') {
       const ilgili = tx.type === 'transfer'
@@ -1020,10 +1169,11 @@ function renderHistoryBody() {
   const kayitlar = gecmisiSuz();
   const tersKume = geriAlinanIdKumesi();
 
-  // Gosterilecek satir kalmadiysa ve aralik yuklu kayitlarla karsilanmiyorsa
-  // bir sonraki eski sayfa otomatik istenir.
+  // Secili aralik yuklu kayitlarla karsilanmiyorsa eski sayfalar, aralik
+  // tamamen gelene kadar (Tum gecmis'te ilk kayda kadar) otomatik istenir;
+  // boylece hem liste hem kayit sayisi eksiksiz olur.
   const karsilandi = gecmisAralikKarsilandi();
-  if (kayitlar.length <= gecmisGosterim && !karsilandi && !eskiYuklemeHatasi) eskiKayitlariYukle();
+  if (!karsilandi && !eskiYuklemeHatasi) eskiKayitlariYukle();
 
   let alt = '';
   if (kayitlar.length > gecmisGosterim) {
@@ -1034,6 +1184,15 @@ function renderHistoryBody() {
       : eskiYuklemeHatasi
         ? `<div class="gecmis-not">Eski kayıtlar alınamadı (internet?).</div><button class="gecmis-daha" data-eylem="eskiKayitYukle">Tekrar dene</button>`
         : `<button class="gecmis-daha" data-eylem="eskiKayitYukle">Daha eski kayıtları yükle</button>`;
+  }
+
+  const ozet = document.getElementById('gecmisOzet');
+  if (ozet) {
+    ozet.textContent = karsilandi
+      ? `${kayitlar.length} kayıt bulundu`
+      : eskiYuklemeHatasi
+        ? `${kayitlar.length}+ kayıt — daha eski kayıtlar alınamadı`
+        : `${kayitlar.length}+ kayıt bulundu — daha eski kayıtlar yükleniyor...`;
   }
 
   if (kayitlar.length === 0) {
@@ -1458,6 +1617,8 @@ document.addEventListener('click', olay => {
   else if (eylem === 'urunDokun') quickTap(hedef.dataset.depo, hedef.dataset.kod);
   else if (eylem === 'geriAl') geriAl(hedef.dataset.tx);
   else if (eylem === 'gecmisDahaFazla') { gecmisGosterim += GECMIS_SAYFA; renderHistoryBody(); }
+  else if (eylem === 'gecmisTemizle') gecmisFiltreleriTemizle();
+  else if (eylem === 'gecmisCsv') gecmisCsvIndir(hedef);
   else if (eylem === 'eskiKayitYukle') { eskiYuklemeHatasi = false; eskiKayitlariYukle(); renderHistoryBody(); }
   else if (eylem === 'depoSil') depoSil(hedef.dataset.depo);
   else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
