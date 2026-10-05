@@ -535,7 +535,7 @@ let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
 
-const SURUM = 'v30';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v31';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -1246,12 +1246,16 @@ function renderSettings() {
     const dolu = Object.values(stock[id] || {}).some(v => v !== 0);
     html += `<div class="ayar-satir">
       <span>${escapeHtml(depots[id])}</span>
-      <button class="ayar-btn tehlike" ${dolu ? 'disabled style="opacity:.4"' : ''} data-eylem="depoSil" data-depo="${escapeHtml(id)}">${dolu ? 'Dolu' : 'Sil'}</button>
+      <span>
+        <button class="ayar-btn tehlike" ${dolu ? '' : 'disabled style="opacity:.4"'} data-eylem="depoSifirla" data-depo="${escapeHtml(id)}">Sıfırla</button>
+        <button class="ayar-btn tehlike" ${dolu ? 'disabled style="opacity:.4"' : ''} data-eylem="depoSil" data-depo="${escapeHtml(id)}">${dolu ? 'Dolu' : 'Sil'}</button>
+      </span>
     </div>`;
   });
   html += `<div class="ayar-satir"><span></span>
     <button class="ayar-btn" onclick="depoEkle()">+ Depo Ekle</button></div>`;
-  html += `<div class="ayar-not">Stoğu boş olmayan depo silinemez — silinirse geçmiş kayıtları anlamsız kalır.</div>`;
+  html += `<div class="ayar-not">Stoğu boş olmayan depo silinemez — silinirse geçmiş kayıtları anlamsız kalır.
+  "Sıfırla" deponun tüm stoğunu 0 yapar; her ürün için geçmişe "Depo sıfırlama" notlu bir kayıt düşer ve bu kayıtlar Geçmiş'ten tek tek geri alınabilir.</div>`;
   html += `</div>`;
 
   const ozelSayi = Object.keys(customProducts).length;
@@ -1433,6 +1437,60 @@ function depoSil(id) {
   db.ref('stock/' + id).remove()
     .catch(e => console.warn('depo stogu sunucudan silinemedi', e));
   saveCache();
+  render();
+}
+
+// Deponun stogunu DOGRUDAN silmez: sifir olmayan her urun icin mevcut miktar
+// kadar ters yonde bir islem kaydi uretip normal kuyruga yazar. Boylece gecmis
+// ve rapor tutarli kalir, kayitlar tek tek geri alinabilir, cevrimdisi calisir
+// ve sifirlama sirasinda baska cihazdan gelen bir giris ezilmez (kuyruk delta
+// uygular, mutlak deger yazmaz).
+function depoSifirla(id) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  if (!Object.prototype.hasOwnProperty.call(depots, id)) return;
+  const depoAdi = String(depots[id]);
+  const pm = prodMap();
+  const simdi = Date.now();
+  const kayitlar = [];
+  // Number()/isFinite: veritabani acikca yazilabilir oldugundan stok degeri
+  // sayi olmayabilir — bozuk deger icin kayit uretilmez.
+  Object.keys(stock[id] || {}).forEach(kod => {
+    const adet = round2(Number(stock[id][kod]));
+    if (!isFinite(adet) || adet === 0) return;
+    kayitlar.push({
+      type: adet > 0 ? 'cikis' : 'giris', depotId: id, kod,
+      ad: pm[kod] ? pm[kod][1] : kod, birim: pm[kod] ? pm[kod][2] : '',
+      miktar: Math.abs(adet), note: 'Depo sıfırlama', ts: simdi,
+      localId: 'local_' + simdi + '_' + kayitlar.length + '_' + Math.random().toString(36).slice(2, 8),
+      kullaniciAdi: mevcutKullanici.ad
+    });
+  });
+  if (kayitlar.length === 0) { alert('Bu depoda sıfırlanacak stok yok.'); return; }
+
+  if (!confirm(`"${depoAdi}" deposundaki ${kayitlar.length} ürünün stoğu SIFIRLANACAK.\n\nGeçmiş kayıtları silinmez; her ürün için "Depo sıfırlama" kaydı oluşur.\n\nDevam edilsin mi?`)) return;
+  const girilen = prompt(`Onaylamak için deponun adını yazın:\n\n${depoAdi}`);
+  if (girilen === null) return;
+  if (girilen.trim().toLocaleLowerCase('tr') !== depoAdi.trim().toLocaleLowerCase('tr')) {
+    alert('Depo adı eşleşmedi — sıfırlama yapılmadı.');
+    return;
+  }
+
+  // ONCE dayanikli kuyruga yaz, ANCAK basariliysa kalici etki dogur (geriAl ile
+  // ayni desen). Tek setQueue: kayitlarin ya hepsi yazilir ya hicbiri.
+  if (!setQueue(getQueue().concat(kayitlar))) {
+    senkronizasyonuDurdur();
+    alert('Cihaz depolaması dolu — sıfırlama kaydedilemedi.\n\nHiçbir şey değişmedi: stok olduğu gibi duruyor.\n\nTelefonda yer açıp uygulamayı yeniden başlatın; sonra tekrar deneyin.');
+    return;
+  }
+
+  kayitlar.forEach(k => {
+    applyDeltaLocal(id, k.kod, k.type === 'giris' ? k.miktar : -k.miktar);
+    transactions.unshift(k);
+  });
+  saveCache();
+
+  updateOfflineBar();
+  trySyncQueue();
   render();
 }
 
@@ -1621,6 +1679,7 @@ document.addEventListener('click', olay => {
   else if (eylem === 'gecmisCsv') gecmisCsvIndir(hedef);
   else if (eylem === 'eskiKayitYukle') { eskiYuklemeHatasi = false; eskiKayitlariYukle(); renderHistoryBody(); }
   else if (eylem === 'depoSil') depoSil(hedef.dataset.depo);
+  else if (eylem === 'depoSifirla') depoSifirla(hedef.dataset.depo);
   else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
   else if (eylem === 'kullaniciCikis') kullaniciCikisYap();
   else if (eylem === 'kullaniciEkle') kullaniciEkle();
