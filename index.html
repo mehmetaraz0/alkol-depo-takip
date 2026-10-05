@@ -176,8 +176,6 @@
   .rk-alan { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 13px; }
   .rk-alan select, .rk-alan input { flex: 1; min-width: 0; padding: 9px 8px; border-radius: 10px;
     border: 1px solid #ddd; background: #fff; font-size: 13px; }
-  .rk-isle { width: 100%; margin-top: 10px; padding: 12px; }
-  .rk-isle:disabled { opacity: .4; }
   table.report-table tr.rk-fark td { background: #fff8e1; }
   table.report-table tr.rk-kilit td { background: #fdecea; color: #b71c1c; }
 
@@ -549,7 +547,7 @@ let depotSearchQuery = '';
 let customProducts = {};
 let lockedProducts = {};   // {kod: true} — bu isletmede kullanilmayan (kilitli) urunler
 
-const SURUM = 'v33';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v34';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -908,12 +906,10 @@ let gecmisBitis = '';
 let gecmisAramaZamanlayici = null;
 
 // ===== Tuketim raporu kontrolu =====
-// Otel programinin "KALEM DEPO ENVANTER HAREKETLERI" PDF'i okunur ve uc is yapilir:
-//  A) kilitli (bu isletmede kullanilmayan) urunlerde hareket varsa uyarir,
-//  B) rapordaki cikislari ayni tarihlerde uygulamaya girilen cikislarla karsilastirir,
-//  C) yalnizca EKSIK kalan farki, yonetici onayiyla cikis kaydi olarak isler.
-// Raporun TAMAMI islenmez: personelin o gun zaten girdigi cikislar ikinci kez
-// dusulur ve stok bozulurdu.
+// Otel programinin "KALEM DEPO ENVANTER HAREKETLERI" PDF'i okunur ve iki is yapilir:
+//  A) kilitli (bu isletmede kullanilmayan) urunlerde stok ya da hareket varsa uyarir,
+//  B) rapordaki KALAN stogu uygulamadaki stokla urun urun karsilastirip farklari gosterir.
+// Yalnizca gosterir; stoga hicbir sey yazmaz.
 const PDFJS_KOK = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
 const PDFJS_OZET = 'sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e';
 const RAPOR_KOD = /^[A-Z]{3}\d{8}$/;
@@ -921,13 +917,9 @@ const RAPOR_SAYI = /^-?[\d.]*\d,\d{2}$/;
 const SIFIRLAMA_NOTU = 'Depo sıfırlama';
 
 let raporKontrolAcik = false;
-let raporKontrol = null;        // {dosyaAdi, depoAdi, urunler: {kod: {ad, birim, giris, cikis}}, okunamayan}
+let raporKontrol = null;        // {dosyaAdi, depoAdi, tarih, urunler: {kod: {ad, birim, giris, cikis, kalan}}, okunamayan}
 let raporKontrolDurum = '';     // dosya okunurken / hata olunca gosterilen metin
-let raporKontrolDepo = '';
-let raporKontrolBas = '';       // YYYY-MM-DD
-let raporKontrolBit = '';
-let raporGecmisYukleniyor = false;
-let raporGecmisHata = false;
+let raporKontrolDepo = '';      // '' = tum depolarin toplami
 
 // PDF okuyucu yalnizca ilk kullanimda indirilir: uygulamanin acilis yukunu
 // buyutmez. integrity: CDN'deki dosya degistirilirse tarayici calistirmaz.
@@ -1007,28 +999,13 @@ async function raporPdfOku(veri) {
       if (sayilar.length !== 10 || sayilar.some(s => !isFinite(s))) { sonuc.okunamayan++; return; }
       const yazilar = metinler.filter(m => m !== kod && !RAPOR_SAYI.test(m));
       const birim = yazilar.length > 1 ? yazilar.pop() : '';
-      const u = sonuc.urunler[kod] || (sonuc.urunler[kod] = { ad: yazilar.join(' '), birim, giris: 0, cikis: 0 });
+      const u = sonuc.urunler[kod] || (sonuc.urunler[kod] = { ad: yazilar.join(' '), birim, giris: 0, cikis: 0, kalan: 0 });
+      u.kalan = round2(u.kalan + sayilar[9]);
       u.giris = round2(u.giris + Math.abs(sayilar[1]) + Math.abs(sayilar[2]));
       u.cikis = round2(u.cikis + Math.abs(sayilar[6]) + Math.abs(sayilar[7]) + Math.abs(sayilar[8]));
     });
   }
   return sonuc;
-}
-
-function bugunTarihi() {
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-}
-
-function tarihMetni(tarih) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tarih || '');
-  return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
-}
-
-function raporAralikMetni() {
-  return raporKontrolBas === raporKontrolBit
-    ? tarihMetni(raporKontrolBas)
-    : tarihMetni(raporKontrolBas) + '–' + tarihMetni(raporKontrolBit);
 }
 
 async function raporDosyasiSecildi(dosya) {
@@ -1045,18 +1022,14 @@ async function raporDosyasiSecildi(dosya) {
       throw raporHatasi(`Raporda birden fazla depo var (${sonuc.depolar.join(', ')}). Raporu tek depo için alıp tekrar yükleyin.`);
     }
     raporKontrol = {
-      dosyaAdi: dosya.name, depoAdi: sonuc.depolar[0] || '',
+      dosyaAdi: dosya.name, depoAdi: sonuc.depolar[0] || '', tarih: (sonuc.tarih || '').replace(/-/g, '.'),
       urunler: sonuc.urunler, okunamayan: sonuc.okunamayan
     };
     raporKontrolDurum = '';
-    // Rapor yalnizca BASIM tarihini tasiyor, kapsadigi donemi tasimiyor: basim
-    // gunu varsayilan olur, yonetici araligi degistirebilir.
-    const t = /^(\d{2})-(\d{2})-(\d{2})$/.exec(sonuc.tarih || '');
-    raporKontrolBas = raporKontrolBit = t ? `20${t[3]}-${t[2]}-${t[1]}` : bugunTarihi();
-    raporGecmisHata = false;
-    let hatirlanan = '';
-    try { hatirlanan = (JSON.parse(localStorage.getItem('rapor_depo_esleme') || '{}') || {})[raporKontrol.depoAdi] || ''; } catch (e) {}
-    if (hatirlanan) raporKontrolDepo = hatirlanan;
+    try {
+      const esleme = JSON.parse(localStorage.getItem('rapor_depo_esleme') || '{}') || {};
+      if (typeof esleme[raporKontrol.depoAdi] === 'string') raporKontrolDepo = esleme[raporKontrol.depoAdi];
+    } catch (e) {}
   } catch (e) {
     console.warn('rapor okunamadi', e);
     raporKontrolDurum = e && e.kullaniciya ? e.message
@@ -1066,28 +1039,25 @@ async function raporDosyasiSecildi(dosya) {
 }
 
 function renderRaporKontrol() {
-  if (!Object.prototype.hasOwnProperty.call(depots, raporKontrolDepo)) raporKontrolDepo = Object.keys(depots)[0] || '';
+  if (raporKontrolDepo !== '' && !Object.prototype.hasOwnProperty.call(depots, raporKontrolDepo)) raporKontrolDepo = '';
   let html =
     `<button data-eylem="raporKontrolKapat" style="background:none;border:none;color:#1f3864;font-size:14px;padding:6px 0;margin-bottom:6px;">&larr; Stok Raporu</button>` +
     `<div class="section-title">Tüketim Raporu Kontrolü</div>` +
     `<div class="ayar-blok">
       <input type="file" id="raporDosya" accept="application/pdf,.pdf">
-      <div class="ayar-not">Otel programından alınan "Kalem Depo Envanter Hareketleri" PDF'ini seçin. Dosya yalnızca bu telefonda okunur, hiçbir yere yüklenmez.</div>`;
+      <div class="ayar-not">Otel programından alınan "Kalem Depo Envanter Hareketleri" PDF'ini seçin. Dosya yalnızca bu cihazda okunur, hiçbir yere yüklenmez.</div>`;
   if (raporKontrol) {
     const urunSayisi = Object.keys(raporKontrol.urunler).length;
     html += `<div class="ayar-satir" style="margin-top:8px"><span>${escapeHtml(raporKontrol.dosyaAdi)}</span><span style="color:#888">${urunSayisi} ürün</span></div>
       <div class="ayar-satir"><span>Rapordaki depo</span><span style="color:#888">${escapeHtml(raporKontrol.depoAdi || '—')}</span></div>
-      <div class="rk-alan"><span>Uygulama deposu</span>
-        <select id="raporDepoSec">${Object.keys(depots).map(id =>
-          `<option value="${escapeHtml(id)}"${id === raporKontrolDepo ? ' selected' : ''}>${escapeHtml(depots[id])}</option>`).join('')}</select></div>
-      <div class="rk-alan"><span>Tarih</span>
-        <input type="date" id="raporBas" value="${escapeHtml(raporKontrolBas)}">
-        <input type="date" id="raporBit" value="${escapeHtml(raporKontrolBit)}"></div>
-      <div class="ayar-not">Rapor hangi günleri kapsıyorsa o aralığı seçin; uygulamadaki çıkışlar bu aralığa göre toplanır.</div>`;
+      <div class="ayar-satir"><span>Rapor tarihi</span><span style="color:#888">${escapeHtml(raporKontrol.tarih || '—')}</span></div>
+      <div class="rk-alan"><span>Uygulama stoğu</span>
+        <select id="raporDepoSec"><option value=""${raporKontrolDepo === '' ? ' selected' : ''}>Tüm depolar (toplam)</option>${Object.keys(depots).map(id =>
+          `<option value="${escapeHtml(id)}"${id === raporKontrolDepo ? ' selected' : ''}>${escapeHtml(depots[id])}</option>`).join('')}</select></div>`;
   }
   html += `</div>`;
   if (raporKontrolDurum) {
-    html += `<div class="rk-kutu ${raporKontrol === null && raporKontrolDurum !== 'PDF okunuyor...' ? 'rk-uyari' : 'rk-bilgi'}">${escapeHtml(raporKontrolDurum)}</div>`;
+    html += `<div class="rk-kutu ${raporKontrolDurum === 'PDF okunuyor...' ? 'rk-bilgi' : 'rk-uyari'}">${escapeHtml(raporKontrolDurum)}</div>`;
   }
   html += `<div id="raporKontrolGovde"></div>`;
   app.innerHTML = html;
@@ -1103,175 +1073,78 @@ function renderRaporKontrol() {
     } catch (e) {}
     renderRaporKontrolGovde();
   });
-  ['raporBas', 'raporBit'].forEach(id => {
-    const girdi = document.getElementById(id);
-    if (girdi) girdi.addEventListener('change', () => {
-      if (id === 'raporBas') raporKontrolBas = girdi.value; else raporKontrolBit = girdi.value;
-      raporGecmisHata = false;
-      renderRaporKontrolGovde();
-    });
-  });
   renderRaporKontrolGovde();
 }
 
-// Secili aralik, yuklu islem kayitlariyla tamamen karsilaniyor mu?
-function raporGecmisKarsilandi(bas) {
-  return eskiHepsiYuklendi || gecmisTumKayitlar().some(tx => tx && Number(tx.ts) < bas);
-}
-
-// Canli pencere yalnizca son 300 kaydi tutar; aralik daha eskiye uzaniyorsa
-// eksik sayfalar cekilir. Cekilemezse "Uygulama" sutunu eksik kalir — bu durumda
-// stoga isleme kapatilir (eksik toplam, cikislarin ikinci kez dusulmesi demek).
-async function raporGecmisiTamamla(bas) {
-  if (raporGecmisYukleniyor || raporGecmisHata || raporGecmisKarsilandi(bas)) return;
-  raporGecmisYukleniyor = true;
-  try {
-    while (!raporGecmisKarsilandi(bas)) {
-      if (eskiImlec() === null) { raporGecmisHata = true; break; }
-      eskiYuklemeHatasi = false;
-      await eskiKayitlariYukle();
-      if (eskiYuklemeHatasi) { raporGecmisHata = true; break; }
-    }
-  } finally {
-    raporGecmisYukleniyor = false;
-  }
-  if (currentTab === 'rapor' && raporKontrolAcik) renderRaporKontrolGovde();
-}
-
-// Rapor ile uygulamayi urun urun yan yana koyar. fark = rapor - uygulama:
-// arti ise uygulamada eksik cikis var, eksi ise uygulamada fazla.
+// Rapordaki KALAN stok ile uygulamadaki stogu urun urun yan yana koyar.
+// fark = uygulama - rapor: eksi ise uygulamada stok eksik, arti ise fazla.
 function raporKarsilastir() {
-  const bas = gunBaslangici(raporKontrolBas);
-  const bitGun = gunBaslangici(raporKontrolBit);
-  if (!raporKontrol || bas === null || bitGun === null || bitGun < bas) return null;
-  const bit = bitGun + 86400000 - 1;
-  const depoId = raporKontrolDepo;
-  const kume = geriAlinanIdKumesi();
+  if (!raporKontrol) return [];
+  const depoIdler = raporKontrolDepo === '' ? Object.keys(depots) : [raporKontrolDepo];
   const uygulama = {};
-  gecmisTumKayitlar().forEach(tx => {
-    // Geri alinan islem ve onun ters kaydi birbirini goturur; depo sifirlama
-    // tuketim degildir.
-    if (!tx || tx.revertOf || geriAlinmisMi(tx, kume) || tx.note === SIFIRLAMA_NOTU) return;
-    // raporTs: rapordan islenen kayit, islendigi gune degil raporun gunune sayilir.
-    const zaman = Number(tx.raporTs) || Number(tx.ts) || 0;
-    if (zaman < bas || zaman > bit) return;
-    const cikti = tx.type === 'cikis' ? tx.depotId === depoId : (tx.type === 'transfer' && tx.fromDepot === depoId);
-    if (!cikti) return;
-    uygulama[tx.kod] = round2((uygulama[tx.kod] || 0) + (Number(tx.miktar) || 0));
-  });
+  depoIdler.forEach(id => Object.keys(stock[id] || {}).forEach(kod => {
+    const adet = Number(stock[id][kod]);
+    if (isFinite(adet) && adet !== 0) uygulama[kod] = round2((uygulama[kod] || 0) + adet);
+  }));
 
   const pm = prodMap();
   const kodlar = new Set(Object.keys(raporKontrol.urunler).concat(Object.keys(uygulama)));
-  const satirlar = [...kodlar].map(kod => {
+  return [...kodlar].map(kod => {
     const r = raporKontrol.urunler[kod];
-    const rapor = r ? r.cikis : 0;
+    const rapor = r ? r.kalan : 0;
     const uyg = uygulama[kod] || 0;
     return {
       kod, ad: pm[kod] ? pm[kod][1] : (r && r.ad ? r.ad : kod), birim: pm[kod] ? pm[kod][2] : (r ? r.birim : ''),
-      rapor, uygulama: uyg, fark: round2(rapor - uyg), giris: r ? r.giris : 0,
-      kilitli: kilitliMi(kod), katalogda: !!pm[kod]
+      rapor, uygulama: uyg, fark: round2(uyg - rapor),
+      giris: r ? r.giris : 0, cikis: r ? r.cikis : 0,
+      raporda: !!r, kilitli: kilitliMi(kod), katalogda: !!pm[kod]
     };
-  }).sort((a, b) => a.ad.localeCompare(b.ad));
-  return { bas, bit, satirlar };
+  }).sort((a, b) => ((a.fark === 0) - (b.fark === 0)) || a.ad.localeCompare(b.ad));   // farkli olanlar ustte
 }
 
 function renderRaporKontrolGovde() {
   const govde = document.getElementById('raporKontrolGovde');
   if (!govde) return;
   if (!raporKontrol) { govde.innerHTML = ''; return; }
-  const k = raporKarsilastir();
-  if (!k) { govde.innerHTML = `<div class="rk-kutu rk-uyari">Geçerli bir tarih aralığı seçin (bitiş, başlangıçtan önce olamaz).</div>`; return; }
-  raporGecmisiTamamla(k.bas);
-  const gecmisTam = raporGecmisKarsilandi(k.bas);
-  const miktar = s => `${fmtNum(s)}`;
+  const satirlar = raporKarsilastir();
   let html = '';
 
-  if (!gecmisTam) {
-    html += raporGecmisHata
-      ? `<div class="rk-kutu rk-uyari">Eski işlem kayıtları alınamadı (internet?) — "Uygulama" sütunu eksik olabilir, stoğa işleme kapalı.
-           <button class="ayar-btn" data-eylem="raporGecmisTekrar" style="margin-left:6px">Tekrar dene</button></div>`
-      : `<div class="rk-kutu rk-bilgi">Eski işlem kayıtları yükleniyor...</div>`;
-  }
-
-  const kilitliler = k.satirlar.filter(s => s.kilitli && (s.rapor > 0 || s.giris > 0));
+  const kilitliler = satirlar.filter(s => s.kilitli && s.raporda && (s.rapor !== 0 || s.cikis > 0 || s.giris > 0));
   if (kilitliler.length > 0) {
-    html += `<div class="rk-kutu rk-uyari"><b>🔒 Kilitli üründe hareket var (${kilitliler.length})</b>` +
+    html += `<div class="rk-kutu rk-uyari"><b>🔒 Kilitli üründe stok ya da hareket var (${kilitliler.length})</b>` +
       kilitliler.map(s => `<div>${escapeHtml(s.ad)} <span style="opacity:.7">${escapeHtml(s.kod)}</span> — ` +
-        [s.rapor > 0 ? `çıkış ${miktar(s.rapor)}` : '', s.giris > 0 ? `giriş ${miktar(s.giris)}` : ''].filter(Boolean).join(', ') +
+        [s.rapor !== 0 ? `stok ${fmtNum(s.rapor)}` : '', s.cikis > 0 ? `çıkış ${fmtNum(s.cikis)}` : '', s.giris > 0 ? `giriş ${fmtNum(s.giris)}` : ''].filter(Boolean).join(', ') +
         ` ${escapeHtml(s.birim)}</div>`).join('') +
-      `<div style="margin-top:4px">Bu ürünler burada kullanılmıyor; otel programında yanlış kalem (ör. 70 CL yerine 100 CL) seçilmiş olabilir.</div></div>`;
+      `<div style="margin-top:4px">Bu ürünler burada kullanılmıyor; otel programında yanlış kalem (ör. 100 CL yerine 70 CL) seçilmiş olabilir.</div></div>`;
   } else {
-    html += `<div class="rk-kutu rk-tamam">Kilitli ürünlerde hareket yok.</div>`;
+    html += `<div class="rk-kutu rk-tamam">Raporda kilitli ürün yok.</div>`;
   }
 
-  const katalogDisi = k.satirlar.filter(s => !s.katalogda && s.rapor > 0);
+  const katalogDisi = satirlar.filter(s => !s.katalogda);
   if (katalogDisi.length > 0) {
-    html += `<div class="rk-kutu rk-bilgi"><b>Uygulama kataloğunda olmayan ürün (${katalogDisi.length})</b> — stoğa işlenemez, önce Ayarlar'dan eklenmeli:` +
-      katalogDisi.map(s => `<div>${escapeHtml(s.ad)} <span style="opacity:.7">${escapeHtml(s.kod)}</span> — çıkış ${miktar(s.rapor)} ${escapeHtml(s.birim)}</div>`).join('') + `</div>`;
+    html += `<div class="rk-kutu rk-bilgi"><b>Uygulama kataloğunda olmayan ürün (${katalogDisi.length})</b> — Ayarlar'dan eklenmeli:` +
+      katalogDisi.map(s => `<div>${escapeHtml(s.ad)} <span style="opacity:.7">${escapeHtml(s.kod)}</span></div>`).join('') + `</div>`;
   }
   if (raporKontrol.okunamayan > 0) {
     html += `<div class="rk-kutu rk-uyari">Raporda ${raporKontrol.okunamayan} ürün satırı okunamadı ve karşılaştırmaya girmedi.</div>`;
   }
 
-  const gorunen = k.satirlar.filter(s => s.rapor > 0 || s.uygulama > 0);
+  const gorunen = satirlar.filter(s => s.rapor !== 0 || s.uygulama !== 0);
   const farkli = gorunen.filter(s => s.fark !== 0).length;
   if (gorunen.length === 0) {
-    html += `<div class="empty-state">Bu aralıkta ne raporda ne uygulamada çıkış var.</div>`;
+    html += `<div class="empty-state">Ne raporda ne uygulamada stok var.</div>`;
   } else {
-    html += `<div class="gecmis-ozet">${gorunen.length} üründe çıkış var &middot; ${farkli === 0 ? 'rapor ile uygulama aynı' : farkli + ' üründe fark var'}</div>
+    html += `<div class="gecmis-ozet">${gorunen.length} ürün &middot; ${farkli === 0 ? 'rapor ile uygulama stoğu aynı' : farkli + ' üründe fark var'}</div>
       <div class="report-table-wrap"><table class="report-table"><thead><tr>
-        <th>Ürün</th><th>Rapor</th><th>Uygulama</th><th>Fark</th></tr></thead><tbody>` +
+        <th>Ürün</th><th>Rapor stok</th><th>Uygulama stok</th><th>Fark</th></tr></thead><tbody>` +
       gorunen.map(s => `<tr class="${s.kilitli ? 'rk-kilit' : s.fark !== 0 ? 'rk-fark' : ''}">
         <td>${s.kilitli ? '🔒 ' : ''}${escapeHtml(s.ad)} <span style="color:#999;font-weight:400;">(${escapeHtml(s.birim)})</span></td>
-        <td>${miktar(s.rapor)}</td><td>${miktar(s.uygulama)}</td>
-        <td class="tot">${s.fark === 0 ? '✓' : (s.fark > 0 ? '+' : '') + miktar(s.fark)}</td></tr>`).join('') +
+        <td>${fmtNum(s.rapor)}</td><td>${fmtNum(s.uygulama)}</td>
+        <td class="tot">${s.fark === 0 ? '✓' : (s.fark > 0 ? '+' : '') + fmtNum(s.fark)}</td></tr>`).join('') +
       `</tbody></table></div>
-      <div class="ayar-not">Rapor = Transfer Çıkış + Satın Alma Çıkış + Tüketim sütunları (düzeltmeler hariç). Fark artıysa uygulamada eksik çıkış, eksiyse uygulamada fazla çıkış var.</div>`;
+      <div class="ayar-not">Rapor stok = rapordaki "Kalan" sütunu. Fark = uygulama − rapor: eksiyse uygulamada stok eksik, artıysa fazla. Bu ekran yalnızca gösterir, stoğu değiştirmez.</div>`;
   }
-
-  const adaylar = k.satirlar.filter(s => s.fark > 0 && s.katalogda);
-  html += `<button class="ayar-btn rk-isle" data-eylem="raporIsle" ${adaylar.length === 0 || !gecmisTam ? 'disabled' : ''}>Eksik çıkışları stoğa işle (${adaylar.length} ürün)</button>`;
   govde.innerHTML = html;
-}
-
-function raporFarklariniIsle() {
-  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
-  const k = raporKarsilastir();
-  if (!k) return;
-  const depoId = raporKontrolDepo;
-  if (!Object.prototype.hasOwnProperty.call(depots, depoId)) return;
-  if (!raporGecmisKarsilandi(k.bas)) { alert('Uygulamadaki eski kayıtlar tam yüklenemedi — karşılaştırma eksik olduğu için stoğa işlenmedi.'); return; }
-
-  const adaylar = k.satirlar.filter(s => s.fark > 0 && s.katalogda);
-  const secilen = adaylar.filter(s => !s.kilitli);
-  // Kilitli urun otomatik islenmez: buyuk olasilikla yanlis kalem, tek tek sorulur.
-  adaylar.filter(s => s.kilitli).forEach(s => {
-    if (confirm(`KİLİTLİ ÜRÜN\n\n${s.ad}\nRaporda ${fmtNum(s.fark)} ${s.birim} işlenmemiş çıkış var.\n\nBu ürün yine de stoktan düşülsün mü?\n(İptal: bu ürün atlanır)`)) secilen.push(s);
-  });
-  if (secilen.length === 0) { alert('İşlenecek eksik çıkış yok.'); return; }
-
-  const eksiyeDusen = secilen.filter(s => !stokYeterliMi(depoId, s.kod, s.fark).yeterli).length;
-  const aralik = raporAralikMetni();
-  if (!confirm(`"${depots[depoId]}" deposundan ${secilen.length} ürün için çıkış kaydı oluşturulacak (rapor: ${aralik}).` +
-      (eksiyeDusen ? `\n\nDİKKAT: ${eksiyeDusen} üründe stok yetersiz — eksiye düşecek.` : '') +
-      `\n\nKayıtlar Geçmiş'ten tek tek geri alınabilir. Devam edilsin mi?`)) return;
-
-  const simdi = Date.now();
-  // Aralik gecmisteyse raporTs araligin sonuna sabitlenir: ayni rapor yeniden
-  // yuklendiginde bu kayitlar "Uygulama" toplamina girer ve ikinci kez islenmez.
-  const raporTs = Math.max(k.bas, Math.min(k.bit, simdi));
-  const pm = prodMap();
-  const kayitlar = secilen.map((s, i) => ({
-    type: 'cikis', depotId: depoId, kod: s.kod, ad: pm[s.kod][1], birim: pm[s.kod][2],
-    miktar: s.fark, note: 'Rapor ' + aralik, ts: simdi, raporTs,
-    localId: 'local_' + simdi + '_' + i + '_' + Math.random().toString(36).slice(2, 8),
-    kullaniciAdi: mevcutKullanici.ad
-  }));
-  if (!kayitlariKuyrugaYaz(kayitlar)) {
-    alert('Cihaz depolaması dolu — kayıtlar işlenemedi.\n\nHiçbir şey değişmedi: stok olduğu gibi duruyor.\n\nTelefonda yer açıp uygulamayı yeniden başlatın; sonra tekrar deneyin.');
-    return;
-  }
-  render();
 }
 
 // Canli dinleyici yalnizca son 300 kaydi tutuyor ve ekran ilk 100 satiri
@@ -2144,8 +2017,6 @@ document.addEventListener('click', olay => {
   else if (eylem === 'urunKilidiAc') urunKilidiAc(hedef.dataset.kod);
   else if (eylem === 'raporKontrolAc') { raporKontrolAcik = true; render(); }
   else if (eylem === 'raporKontrolKapat') { raporKontrolAcik = false; render(); }
-  else if (eylem === 'raporGecmisTekrar') { raporGecmisHata = false; renderRaporKontrolGovde(); }
-  else if (eylem === 'raporIsle') raporFarklariniIsle();
   else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
   else if (eylem === 'kullaniciCikis') kullaniciCikisYap();
   else if (eylem === 'kullaniciEkle') kullaniciEkle();
