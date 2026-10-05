@@ -1,4 +1,4 @@
-const CACHE_ADI = 'depo-v31';
+const CACHE_ADI = 'depo-v33';
 
 const KABUK = [
   './',
@@ -36,7 +36,7 @@ self.addEventListener('fetch', olay => {
     caches.match(istek).then(bulunan => {
       if (bulunan) return bulunan;
       return fetch(istek).then(yanit => {
-        if (yanit.ok && (istek.url.startsWith(self.registration.scope) || istek.url.includes('gstatic.com'))) {
+        if (yanit.ok && (istek.url.startsWith(self.registration.scope) || istek.url.includes('gstatic.com') || istek.url.includes('cdnjs.cloudflare.com'))) {
           const kopya = yanit.clone();
           caches.open(CACHE_ADI).then(c => c.put(istek, kopya));
         }

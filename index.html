@@ -168,6 +168,19 @@
   table.report-table tr.grp td { background: #e8e8ee; font-weight: 700; text-align: left; color: #444; }
   table.report-table td.tot { font-weight: 700; color: #1f3864; }
 
+  /* Tuketim raporu kontrolu */
+  .rk-kutu { border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; line-height: 1.5; }
+  .rk-uyari { background: #fdecea; color: #b71c1c; border: 1px solid #f0c0c0; }
+  .rk-tamam { background: #e8f5e9; color: #1b5e20; }
+  .rk-bilgi { background: #fff8e1; color: #6d4c00; }
+  .rk-alan { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 13px; }
+  .rk-alan select, .rk-alan input { flex: 1; min-width: 0; padding: 9px 8px; border-radius: 10px;
+    border: 1px solid #ddd; background: #fff; font-size: 13px; }
+  .rk-isle { width: 100%; margin-top: 10px; padding: 12px; }
+  .rk-isle:disabled { opacity: .4; }
+  table.report-table tr.rk-fark td { background: #fff8e1; }
+  table.report-table tr.rk-kilit td { background: #fdecea; color: #b71c1c; }
+
   @media print {
     header, nav.bottom, .fab, .report-actions, .search-box { display: none !important; }
     body { padding: 0; background: #fff; }
@@ -534,8 +547,9 @@ let currentTab = 'depolar';
 let openDepotDetail = null; // depot id when viewing detail
 let depotSearchQuery = '';
 let customProducts = {};
+let lockedProducts = {};   // {kod: true} — bu isletmede kullanilmayan (kilitli) urunler
 
-const SURUM = 'v31';   // sw.js icindeki CACHE_ADI ile ayni tutulur
+const SURUM = 'v33';   // sw.js icindeki CACHE_ADI ile ayni tutulur
 
 const app = document.getElementById('app');
 
@@ -750,11 +764,13 @@ function backToList() {
 let reportSearchQuery = '';
 
 function renderReport() {
+  if (raporKontrolAcik) { renderRaporKontrol(); return; }
   app.innerHTML =
     `<div class="section-title">Stok Raporu &middot; Tüm Depolar</div>` +
     `<div class="report-actions">
       <button onclick="window.print()">Yazdır</button>
       <button onclick="exportReportCsv()">Excel'e Aktar</button>
+      <button data-eylem="raporKontrolAc">Tüketim Raporu Kontrolü</button>
     </div>` +
     `<input class="search-box" id="reportSearchBox" placeholder="Ürün ara..." value="${escapeHtml(reportSearchQuery)}">` +
     `<div id="reportBody"></div>`;
@@ -890,6 +906,373 @@ let gecmisKullanici = 'tumu';
 let gecmisBaslangic = '';    // 'YYYY-AA-GG' — yalnizca 'ozel' aralikta
 let gecmisBitis = '';
 let gecmisAramaZamanlayici = null;
+
+// ===== Tuketim raporu kontrolu =====
+// Otel programinin "KALEM DEPO ENVANTER HAREKETLERI" PDF'i okunur ve uc is yapilir:
+//  A) kilitli (bu isletmede kullanilmayan) urunlerde hareket varsa uyarir,
+//  B) rapordaki cikislari ayni tarihlerde uygulamaya girilen cikislarla karsilastirir,
+//  C) yalnizca EKSIK kalan farki, yonetici onayiyla cikis kaydi olarak isler.
+// Raporun TAMAMI islenmez: personelin o gun zaten girdigi cikislar ikinci kez
+// dusulur ve stok bozulurdu.
+const PDFJS_KOK = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+const PDFJS_OZET = 'sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e';
+const RAPOR_KOD = /^[A-Z]{3}\d{8}$/;
+const RAPOR_SAYI = /^-?[\d.]*\d,\d{2}$/;
+const SIFIRLAMA_NOTU = 'Depo sıfırlama';
+
+let raporKontrolAcik = false;
+let raporKontrol = null;        // {dosyaAdi, depoAdi, urunler: {kod: {ad, birim, giris, cikis}}, okunamayan}
+let raporKontrolDurum = '';     // dosya okunurken / hata olunca gosterilen metin
+let raporKontrolDepo = '';
+let raporKontrolBas = '';       // YYYY-MM-DD
+let raporKontrolBit = '';
+let raporGecmisYukleniyor = false;
+let raporGecmisHata = false;
+
+// PDF okuyucu yalnizca ilk kullanimda indirilir: uygulamanin acilis yukunu
+// buyutmez. integrity: CDN'deki dosya degistirilirse tarayici calistirmaz.
+let pdfKutuphaneSozu = null;
+function pdfKutuphanesiniYukle() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfKutuphaneSozu) return pdfKutuphaneSozu;
+  pdfKutuphaneSozu = new Promise((cozumle, reddet) => {
+    const s = document.createElement('script');
+    s.src = PDFJS_KOK + 'pdf.min.js';
+    s.integrity = PDFJS_OZET;
+    s.crossOrigin = 'anonymous';
+    s.onload = () => {
+      if (!window.pdfjsLib) { reddet(new Error('pdf.js yuklenemedi')); return; }
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_KOK + 'pdf.worker.min.js';
+      cozumle(window.pdfjsLib);
+    };
+    s.onerror = () => reddet(new Error('pdf.js indirilemedi'));
+    document.head.appendChild(s);
+  }).catch(e => { pdfKutuphaneSozu = null; throw e; });
+  return pdfKutuphaneSozu;
+}
+
+function raporHatasi(mesaj) {
+  const e = new Error(mesaj);
+  e.kullaniciya = true;   // mesaj oldugu gibi ekranda gosterilebilir
+  return e;
+}
+
+// Rapor sayfalari 90 derece donuk basiliyor: satir ekseni x, sutun ekseni y.
+// Donuk olmayan cikti da okunabilsin diye eksen metnin kendi yonunden turetilir.
+// Urun satiri: [kod, ad..., birim] + sirayla 10 sayi:
+//   Devir | Satin Alma Giris | Transfer Giris | Duzeltme Giris Stok |
+//   Duzeltme Giris Hata | Duzeltme Cikis Hata | Transfer Cikis |
+//   Satin Alma Cikis | Tuketim | Kalan
+async function raporPdfOku(veri) {
+  const lib = await pdfKutuphanesiniYukle();
+  const pdf = await lib.getDocument({ data: veri }).promise;
+  const sonuc = { baslikVar: false, tarih: null, depolar: [], urunler: {}, okunamayan: 0 };
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const icerik = await (await pdf.getPage(n)).getTextContent();
+    const ogeler = [];
+    icerik.items.forEach(o => {
+      const metin = (o.str || '').trim();
+      if (!metin) return;
+      const t = o.transform;
+      if (Math.abs(t[1]) > Math.abs(t[0])) {
+        const yon = t[1] < 0 ? -1 : 1;
+        ogeler.push({ satir: yon * t[4], sutun: yon * t[5], metin });
+      } else {
+        ogeler.push({ satir: -t[5], sutun: t[4], metin });
+      }
+    });
+    ogeler.sort((a, b) => a.satir - b.satir);
+    const satirlar = [];
+    let son = null;
+    ogeler.forEach(o => {
+      if (son === null || o.satir - son > 2) satirlar.push([]);
+      satirlar[satirlar.length - 1].push(o);
+      son = o.satir;
+    });
+    satirlar.forEach(satir => {
+      const metinler = satir.sort((a, b) => a.sutun - b.sutun).map(o => o.metin);
+      if (metinler.some(m => m.includes('KALEM DEPO ENVANTER'))) {
+        sonuc.baslikVar = true;
+        const tarih = metinler.find(m => /^\d{2}-\d{2}-\d{2}$/.test(m));
+        if (tarih) sonuc.tarih = tarih;
+      }
+      if (metinler.includes('Depo')) {
+        const depo = metinler.filter(m => m !== 'Depo' && m !== ':').join(' ');
+        if (depo && !sonuc.depolar.includes(depo)) sonuc.depolar.push(depo);
+        return;
+      }
+      const kod = metinler.find(m => RAPOR_KOD.test(m));
+      if (!kod) return;
+      const sayilar = metinler.filter(m => RAPOR_SAYI.test(m)).map(m => Number(m.replace(/\./g, '').replace(',', '.')));
+      if (sayilar.length !== 10 || sayilar.some(s => !isFinite(s))) { sonuc.okunamayan++; return; }
+      const yazilar = metinler.filter(m => m !== kod && !RAPOR_SAYI.test(m));
+      const birim = yazilar.length > 1 ? yazilar.pop() : '';
+      const u = sonuc.urunler[kod] || (sonuc.urunler[kod] = { ad: yazilar.join(' '), birim, giris: 0, cikis: 0 });
+      u.giris = round2(u.giris + Math.abs(sayilar[1]) + Math.abs(sayilar[2]));
+      u.cikis = round2(u.cikis + Math.abs(sayilar[6]) + Math.abs(sayilar[7]) + Math.abs(sayilar[8]));
+    });
+  }
+  return sonuc;
+}
+
+function bugunTarihi() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function tarihMetni(tarih) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tarih || '');
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
+}
+
+function raporAralikMetni() {
+  return raporKontrolBas === raporKontrolBit
+    ? tarihMetni(raporKontrolBas)
+    : tarihMetni(raporKontrolBas) + '–' + tarihMetni(raporKontrolBit);
+}
+
+async function raporDosyasiSecildi(dosya) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  if (!dosya) return;
+  raporKontrol = null;
+  raporKontrolDurum = 'PDF okunuyor...';
+  renderRaporKontrol();
+  try {
+    const sonuc = await raporPdfOku(new Uint8Array(await dosya.arrayBuffer()));
+    if (!sonuc.baslikVar) throw raporHatasi('Bu dosya "Kalem Depo Envanter Hareketleri" raporu değil.');
+    if (Object.keys(sonuc.urunler).length === 0) throw raporHatasi('Raporda ürün satırı bulunamadı.');
+    if (sonuc.depolar.length > 1) {
+      throw raporHatasi(`Raporda birden fazla depo var (${sonuc.depolar.join(', ')}). Raporu tek depo için alıp tekrar yükleyin.`);
+    }
+    raporKontrol = {
+      dosyaAdi: dosya.name, depoAdi: sonuc.depolar[0] || '',
+      urunler: sonuc.urunler, okunamayan: sonuc.okunamayan
+    };
+    raporKontrolDurum = '';
+    // Rapor yalnizca BASIM tarihini tasiyor, kapsadigi donemi tasimiyor: basim
+    // gunu varsayilan olur, yonetici araligi degistirebilir.
+    const t = /^(\d{2})-(\d{2})-(\d{2})$/.exec(sonuc.tarih || '');
+    raporKontrolBas = raporKontrolBit = t ? `20${t[3]}-${t[2]}-${t[1]}` : bugunTarihi();
+    raporGecmisHata = false;
+    let hatirlanan = '';
+    try { hatirlanan = (JSON.parse(localStorage.getItem('rapor_depo_esleme') || '{}') || {})[raporKontrol.depoAdi] || ''; } catch (e) {}
+    if (hatirlanan) raporKontrolDepo = hatirlanan;
+  } catch (e) {
+    console.warn('rapor okunamadi', e);
+    raporKontrolDurum = e && e.kullaniciya ? e.message
+      : 'PDF okunamadı. PDF okuyucu ilk kullanımda internetten indirilir — bağlantıyı kontrol edip tekrar deneyin.';
+  }
+  if (currentTab === 'rapor' && raporKontrolAcik) renderRaporKontrol();
+}
+
+function renderRaporKontrol() {
+  if (!Object.prototype.hasOwnProperty.call(depots, raporKontrolDepo)) raporKontrolDepo = Object.keys(depots)[0] || '';
+  let html =
+    `<button data-eylem="raporKontrolKapat" style="background:none;border:none;color:#1f3864;font-size:14px;padding:6px 0;margin-bottom:6px;">&larr; Stok Raporu</button>` +
+    `<div class="section-title">Tüketim Raporu Kontrolü</div>` +
+    `<div class="ayar-blok">
+      <input type="file" id="raporDosya" accept="application/pdf,.pdf">
+      <div class="ayar-not">Otel programından alınan "Kalem Depo Envanter Hareketleri" PDF'ini seçin. Dosya yalnızca bu telefonda okunur, hiçbir yere yüklenmez.</div>`;
+  if (raporKontrol) {
+    const urunSayisi = Object.keys(raporKontrol.urunler).length;
+    html += `<div class="ayar-satir" style="margin-top:8px"><span>${escapeHtml(raporKontrol.dosyaAdi)}</span><span style="color:#888">${urunSayisi} ürün</span></div>
+      <div class="ayar-satir"><span>Rapordaki depo</span><span style="color:#888">${escapeHtml(raporKontrol.depoAdi || '—')}</span></div>
+      <div class="rk-alan"><span>Uygulama deposu</span>
+        <select id="raporDepoSec">${Object.keys(depots).map(id =>
+          `<option value="${escapeHtml(id)}"${id === raporKontrolDepo ? ' selected' : ''}>${escapeHtml(depots[id])}</option>`).join('')}</select></div>
+      <div class="rk-alan"><span>Tarih</span>
+        <input type="date" id="raporBas" value="${escapeHtml(raporKontrolBas)}">
+        <input type="date" id="raporBit" value="${escapeHtml(raporKontrolBit)}"></div>
+      <div class="ayar-not">Rapor hangi günleri kapsıyorsa o aralığı seçin; uygulamadaki çıkışlar bu aralığa göre toplanır.</div>`;
+  }
+  html += `</div>`;
+  if (raporKontrolDurum) {
+    html += `<div class="rk-kutu ${raporKontrol === null && raporKontrolDurum !== 'PDF okunuyor...' ? 'rk-uyari' : 'rk-bilgi'}">${escapeHtml(raporKontrolDurum)}</div>`;
+  }
+  html += `<div id="raporKontrolGovde"></div>`;
+  app.innerHTML = html;
+
+  document.getElementById('raporDosya').addEventListener('change', olay => raporDosyasiSecildi(olay.target.files[0]));
+  const depoSec = document.getElementById('raporDepoSec');
+  if (depoSec) depoSec.addEventListener('change', () => {
+    raporKontrolDepo = depoSec.value;
+    try {
+      const esleme = JSON.parse(localStorage.getItem('rapor_depo_esleme') || '{}') || {};
+      esleme[raporKontrol.depoAdi] = raporKontrolDepo;
+      localStorage.setItem('rapor_depo_esleme', JSON.stringify(esleme));
+    } catch (e) {}
+    renderRaporKontrolGovde();
+  });
+  ['raporBas', 'raporBit'].forEach(id => {
+    const girdi = document.getElementById(id);
+    if (girdi) girdi.addEventListener('change', () => {
+      if (id === 'raporBas') raporKontrolBas = girdi.value; else raporKontrolBit = girdi.value;
+      raporGecmisHata = false;
+      renderRaporKontrolGovde();
+    });
+  });
+  renderRaporKontrolGovde();
+}
+
+// Secili aralik, yuklu islem kayitlariyla tamamen karsilaniyor mu?
+function raporGecmisKarsilandi(bas) {
+  return eskiHepsiYuklendi || gecmisTumKayitlar().some(tx => tx && Number(tx.ts) < bas);
+}
+
+// Canli pencere yalnizca son 300 kaydi tutar; aralik daha eskiye uzaniyorsa
+// eksik sayfalar cekilir. Cekilemezse "Uygulama" sutunu eksik kalir — bu durumda
+// stoga isleme kapatilir (eksik toplam, cikislarin ikinci kez dusulmesi demek).
+async function raporGecmisiTamamla(bas) {
+  if (raporGecmisYukleniyor || raporGecmisHata || raporGecmisKarsilandi(bas)) return;
+  raporGecmisYukleniyor = true;
+  try {
+    while (!raporGecmisKarsilandi(bas)) {
+      if (eskiImlec() === null) { raporGecmisHata = true; break; }
+      eskiYuklemeHatasi = false;
+      await eskiKayitlariYukle();
+      if (eskiYuklemeHatasi) { raporGecmisHata = true; break; }
+    }
+  } finally {
+    raporGecmisYukleniyor = false;
+  }
+  if (currentTab === 'rapor' && raporKontrolAcik) renderRaporKontrolGovde();
+}
+
+// Rapor ile uygulamayi urun urun yan yana koyar. fark = rapor - uygulama:
+// arti ise uygulamada eksik cikis var, eksi ise uygulamada fazla.
+function raporKarsilastir() {
+  const bas = gunBaslangici(raporKontrolBas);
+  const bitGun = gunBaslangici(raporKontrolBit);
+  if (!raporKontrol || bas === null || bitGun === null || bitGun < bas) return null;
+  const bit = bitGun + 86400000 - 1;
+  const depoId = raporKontrolDepo;
+  const kume = geriAlinanIdKumesi();
+  const uygulama = {};
+  gecmisTumKayitlar().forEach(tx => {
+    // Geri alinan islem ve onun ters kaydi birbirini goturur; depo sifirlama
+    // tuketim degildir.
+    if (!tx || tx.revertOf || geriAlinmisMi(tx, kume) || tx.note === SIFIRLAMA_NOTU) return;
+    // raporTs: rapordan islenen kayit, islendigi gune degil raporun gunune sayilir.
+    const zaman = Number(tx.raporTs) || Number(tx.ts) || 0;
+    if (zaman < bas || zaman > bit) return;
+    const cikti = tx.type === 'cikis' ? tx.depotId === depoId : (tx.type === 'transfer' && tx.fromDepot === depoId);
+    if (!cikti) return;
+    uygulama[tx.kod] = round2((uygulama[tx.kod] || 0) + (Number(tx.miktar) || 0));
+  });
+
+  const pm = prodMap();
+  const kodlar = new Set(Object.keys(raporKontrol.urunler).concat(Object.keys(uygulama)));
+  const satirlar = [...kodlar].map(kod => {
+    const r = raporKontrol.urunler[kod];
+    const rapor = r ? r.cikis : 0;
+    const uyg = uygulama[kod] || 0;
+    return {
+      kod, ad: pm[kod] ? pm[kod][1] : (r && r.ad ? r.ad : kod), birim: pm[kod] ? pm[kod][2] : (r ? r.birim : ''),
+      rapor, uygulama: uyg, fark: round2(rapor - uyg), giris: r ? r.giris : 0,
+      kilitli: kilitliMi(kod), katalogda: !!pm[kod]
+    };
+  }).sort((a, b) => a.ad.localeCompare(b.ad));
+  return { bas, bit, satirlar };
+}
+
+function renderRaporKontrolGovde() {
+  const govde = document.getElementById('raporKontrolGovde');
+  if (!govde) return;
+  if (!raporKontrol) { govde.innerHTML = ''; return; }
+  const k = raporKarsilastir();
+  if (!k) { govde.innerHTML = `<div class="rk-kutu rk-uyari">Geçerli bir tarih aralığı seçin (bitiş, başlangıçtan önce olamaz).</div>`; return; }
+  raporGecmisiTamamla(k.bas);
+  const gecmisTam = raporGecmisKarsilandi(k.bas);
+  const miktar = s => `${fmtNum(s)}`;
+  let html = '';
+
+  if (!gecmisTam) {
+    html += raporGecmisHata
+      ? `<div class="rk-kutu rk-uyari">Eski işlem kayıtları alınamadı (internet?) — "Uygulama" sütunu eksik olabilir, stoğa işleme kapalı.
+           <button class="ayar-btn" data-eylem="raporGecmisTekrar" style="margin-left:6px">Tekrar dene</button></div>`
+      : `<div class="rk-kutu rk-bilgi">Eski işlem kayıtları yükleniyor...</div>`;
+  }
+
+  const kilitliler = k.satirlar.filter(s => s.kilitli && (s.rapor > 0 || s.giris > 0));
+  if (kilitliler.length > 0) {
+    html += `<div class="rk-kutu rk-uyari"><b>🔒 Kilitli üründe hareket var (${kilitliler.length})</b>` +
+      kilitliler.map(s => `<div>${escapeHtml(s.ad)} <span style="opacity:.7">${escapeHtml(s.kod)}</span> — ` +
+        [s.rapor > 0 ? `çıkış ${miktar(s.rapor)}` : '', s.giris > 0 ? `giriş ${miktar(s.giris)}` : ''].filter(Boolean).join(', ') +
+        ` ${escapeHtml(s.birim)}</div>`).join('') +
+      `<div style="margin-top:4px">Bu ürünler burada kullanılmıyor; otel programında yanlış kalem (ör. 70 CL yerine 100 CL) seçilmiş olabilir.</div></div>`;
+  } else {
+    html += `<div class="rk-kutu rk-tamam">Kilitli ürünlerde hareket yok.</div>`;
+  }
+
+  const katalogDisi = k.satirlar.filter(s => !s.katalogda && s.rapor > 0);
+  if (katalogDisi.length > 0) {
+    html += `<div class="rk-kutu rk-bilgi"><b>Uygulama kataloğunda olmayan ürün (${katalogDisi.length})</b> — stoğa işlenemez, önce Ayarlar'dan eklenmeli:` +
+      katalogDisi.map(s => `<div>${escapeHtml(s.ad)} <span style="opacity:.7">${escapeHtml(s.kod)}</span> — çıkış ${miktar(s.rapor)} ${escapeHtml(s.birim)}</div>`).join('') + `</div>`;
+  }
+  if (raporKontrol.okunamayan > 0) {
+    html += `<div class="rk-kutu rk-uyari">Raporda ${raporKontrol.okunamayan} ürün satırı okunamadı ve karşılaştırmaya girmedi.</div>`;
+  }
+
+  const gorunen = k.satirlar.filter(s => s.rapor > 0 || s.uygulama > 0);
+  const farkli = gorunen.filter(s => s.fark !== 0).length;
+  if (gorunen.length === 0) {
+    html += `<div class="empty-state">Bu aralıkta ne raporda ne uygulamada çıkış var.</div>`;
+  } else {
+    html += `<div class="gecmis-ozet">${gorunen.length} üründe çıkış var &middot; ${farkli === 0 ? 'rapor ile uygulama aynı' : farkli + ' üründe fark var'}</div>
+      <div class="report-table-wrap"><table class="report-table"><thead><tr>
+        <th>Ürün</th><th>Rapor</th><th>Uygulama</th><th>Fark</th></tr></thead><tbody>` +
+      gorunen.map(s => `<tr class="${s.kilitli ? 'rk-kilit' : s.fark !== 0 ? 'rk-fark' : ''}">
+        <td>${s.kilitli ? '🔒 ' : ''}${escapeHtml(s.ad)} <span style="color:#999;font-weight:400;">(${escapeHtml(s.birim)})</span></td>
+        <td>${miktar(s.rapor)}</td><td>${miktar(s.uygulama)}</td>
+        <td class="tot">${s.fark === 0 ? '✓' : (s.fark > 0 ? '+' : '') + miktar(s.fark)}</td></tr>`).join('') +
+      `</tbody></table></div>
+      <div class="ayar-not">Rapor = Transfer Çıkış + Satın Alma Çıkış + Tüketim sütunları (düzeltmeler hariç). Fark artıysa uygulamada eksik çıkış, eksiyse uygulamada fazla çıkış var.</div>`;
+  }
+
+  const adaylar = k.satirlar.filter(s => s.fark > 0 && s.katalogda);
+  html += `<button class="ayar-btn rk-isle" data-eylem="raporIsle" ${adaylar.length === 0 || !gecmisTam ? 'disabled' : ''}>Eksik çıkışları stoğa işle (${adaylar.length} ürün)</button>`;
+  govde.innerHTML = html;
+}
+
+function raporFarklariniIsle() {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  const k = raporKarsilastir();
+  if (!k) return;
+  const depoId = raporKontrolDepo;
+  if (!Object.prototype.hasOwnProperty.call(depots, depoId)) return;
+  if (!raporGecmisKarsilandi(k.bas)) { alert('Uygulamadaki eski kayıtlar tam yüklenemedi — karşılaştırma eksik olduğu için stoğa işlenmedi.'); return; }
+
+  const adaylar = k.satirlar.filter(s => s.fark > 0 && s.katalogda);
+  const secilen = adaylar.filter(s => !s.kilitli);
+  // Kilitli urun otomatik islenmez: buyuk olasilikla yanlis kalem, tek tek sorulur.
+  adaylar.filter(s => s.kilitli).forEach(s => {
+    if (confirm(`KİLİTLİ ÜRÜN\n\n${s.ad}\nRaporda ${fmtNum(s.fark)} ${s.birim} işlenmemiş çıkış var.\n\nBu ürün yine de stoktan düşülsün mü?\n(İptal: bu ürün atlanır)`)) secilen.push(s);
+  });
+  if (secilen.length === 0) { alert('İşlenecek eksik çıkış yok.'); return; }
+
+  const eksiyeDusen = secilen.filter(s => !stokYeterliMi(depoId, s.kod, s.fark).yeterli).length;
+  const aralik = raporAralikMetni();
+  if (!confirm(`"${depots[depoId]}" deposundan ${secilen.length} ürün için çıkış kaydı oluşturulacak (rapor: ${aralik}).` +
+      (eksiyeDusen ? `\n\nDİKKAT: ${eksiyeDusen} üründe stok yetersiz — eksiye düşecek.` : '') +
+      `\n\nKayıtlar Geçmiş'ten tek tek geri alınabilir. Devam edilsin mi?`)) return;
+
+  const simdi = Date.now();
+  // Aralik gecmisteyse raporTs araligin sonuna sabitlenir: ayni rapor yeniden
+  // yuklendiginde bu kayitlar "Uygulama" toplamina girer ve ikinci kez islenmez.
+  const raporTs = Math.max(k.bas, Math.min(k.bit, simdi));
+  const pm = prodMap();
+  const kayitlar = secilen.map((s, i) => ({
+    type: 'cikis', depotId: depoId, kod: s.kod, ad: pm[s.kod][1], birim: pm[s.kod][2],
+    miktar: s.fark, note: 'Rapor ' + aralik, ts: simdi, raporTs,
+    localId: 'local_' + simdi + '_' + i + '_' + Math.random().toString(36).slice(2, 8),
+    kullaniciAdi: mevcutKullanici.ad
+  }));
+  if (!kayitlariKuyrugaYaz(kayitlar)) {
+    alert('Cihaz depolaması dolu — kayıtlar işlenemedi.\n\nHiçbir şey değişmedi: stok olduğu gibi duruyor.\n\nTelefonda yer açıp uygulamayı yeniden başlatın; sonra tekrar deneyin.');
+    return;
+  }
+  render();
+}
 
 // Canli dinleyici yalnizca son 300 kaydi tutuyor ve ekran ilk 100 satiri
 // basiyordu: "Tumu" secilse bile bu pencereden eski kayitlar hic gorunmuyordu.
@@ -1266,6 +1649,25 @@ function renderSettings() {
       <button class="ayar-btn" onclick="urunEkle()">+ Ürün Ekle</button></div>
   </div>`;
 
+  const katalog = prodMap();
+  const kilitliKodlar = Object.keys(lockedProducts).filter(kilitliMi)
+    .sort((a, b) => (katalog[a] ? katalog[a][1] : a).localeCompare(katalog[b] ? katalog[b][1] : b));
+  html += `<div class="ayar-blok"><h3>Kilitli Ürünler</h3>`;
+  if (kilitliKodlar.length === 0) {
+    html += `<div class="ayar-satir"><span style="color:#888">Kilitli ürün yok.</span></div>`;
+  }
+  kilitliKodlar.forEach(kod => {
+    html += `<div class="ayar-satir">
+      <span>🔒 ${escapeHtml(katalog[kod] ? katalog[kod][1] : kod)} <span style="color:#888;font-size:12px;">${escapeHtml(kod)}</span></span>
+      <button class="ayar-btn" data-eylem="urunKilidiAc" data-kod="${escapeHtml(kod)}">Kilidi aç</button>
+    </div>`;
+  });
+  html += `<input class="search-box" id="kilitAramaKutusu" style="margin-top:10px" placeholder="Kilitlenecek ürünü ara..." value="${escapeHtml(kilitArama)}">
+    <div id="kilitAramaSonuc"></div>
+    <div class="ayar-not">Burada kullanılmayan kalemleri kilitleyin (ör. 100 CL'si kullanılan ürünün 70 CL'si).
+    Kilitli ürün giriş/çıkış için seçilemez; Rapor &rarr; Tüketim Raporu Kontrolü'nde bu ürünlerde hareket varsa uyarı verilir.</div>
+  </div>`;
+
   html += `<div class="ayar-blok"><h3>Kullanıcılar</h3>`;
   Object.keys(users).forEach(id => {
     const u = users[id];
@@ -1295,6 +1697,13 @@ function renderSettings() {
   </div>`;
 
   app.innerHTML = html;
+
+  const kilitKutu = document.getElementById('kilitAramaKutusu');
+  kilitKutu.addEventListener('input', () => {
+    kilitArama = kilitKutu.value;
+    renderKilitArama();
+  });
+  renderKilitArama();
 }
 
 function depoEkle() {
@@ -1460,7 +1869,7 @@ function depoSifirla(id) {
     kayitlar.push({
       type: adet > 0 ? 'cikis' : 'giris', depotId: id, kod,
       ad: pm[kod] ? pm[kod][1] : kod, birim: pm[kod] ? pm[kod][2] : '',
-      miktar: Math.abs(adet), note: 'Depo sıfırlama', ts: simdi,
+      miktar: Math.abs(adet), note: SIFIRLAMA_NOTU, ts: simdi,
       localId: 'local_' + simdi + '_' + kayitlar.length + '_' + Math.random().toString(36).slice(2, 8),
       kullaniciAdi: mevcutKullanici.ad
     });
@@ -1475,23 +1884,73 @@ function depoSifirla(id) {
     return;
   }
 
-  // ONCE dayanikli kuyruga yaz, ANCAK basariliysa kalici etki dogur (geriAl ile
-  // ayni desen). Tek setQueue: kayitlarin ya hepsi yazilir ya hicbiri.
-  if (!setQueue(getQueue().concat(kayitlar))) {
-    senkronizasyonuDurdur();
+  if (!kayitlariKuyrugaYaz(kayitlar)) {
     alert('Cihaz depolaması dolu — sıfırlama kaydedilemedi.\n\nHiçbir şey değişmedi: stok olduğu gibi duruyor.\n\nTelefonda yer açıp uygulamayı yeniden başlatın; sonra tekrar deneyin.');
     return;
   }
+  render();
+}
 
+// Birden fazla giris/cikis kaydini TEK seferde isler. ONCE dayanikli kuyruga
+// yaz, ANCAK basariliysa kalici etki dogur (geriAl ile ayni desen). Tek
+// setQueue: kayitlarin ya hepsi yazilir ya hicbiri. Yazilamazsa false doner
+// ve hicbir sey degismez.
+function kayitlariKuyrugaYaz(kayitlar) {
+  if (!setQueue(getQueue().concat(kayitlar))) {
+    senkronizasyonuDurdur();
+    return false;
+  }
   kayitlar.forEach(k => {
-    applyDeltaLocal(id, k.kod, k.type === 'giris' ? k.miktar : -k.miktar);
+    applyDeltaLocal(k.depotId, k.kod, k.type === 'giris' ? k.miktar : -k.miktar);
     transactions.unshift(k);
   });
   saveCache();
-
   updateOfflineBar();
   trySyncQueue();
+  return true;
+}
+
+// ===== Kilitli urunler =====
+// Bu isletmede kullanilmayan kalemler (or. 100 CL'si kullanilan urunun 70 CL'si).
+// Kilitli urun uygulamada islem icin secilemez; tuketim raporu kontrolunde bu
+// urunlerde hareket varsa uyari verilir.
+let kilitArama = '';
+
+function kilitliMi(kod) { return lockedProducts[kod] === true; }
+
+function urunKilitle(kod) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  if (!prodMap()[kod]) return;
+  lockedProducts[kod] = true;
+  db.ref('lockedProducts/' + kod).set(true)
+    .catch(e => console.warn('urun kilidi sunucuya yazilamadi', e));
+  saveCache();
   render();
+}
+
+function urunKilidiAc(kod) {
+  if (!mevcutKullanici || mevcutKullanici.rol !== 'yonetici') { alert('Bu işlem için yönetici yetkisi gerekir.'); return; }
+  delete lockedProducts[kod];
+  db.ref('lockedProducts/' + kod).remove()
+    .catch(e => console.warn('urun kilidi sunucudan silinemedi', e));
+  saveCache();
+  render();
+}
+
+function renderKilitArama() {
+  const sonuc = document.getElementById('kilitAramaSonuc');
+  if (!sonuc) return;
+  const q = aramaNormali(kilitArama.trim());
+  if (q.length < 2) { sonuc.innerHTML = ''; return; }
+  const eslesenler = Object.values(prodMap())
+    .filter(p => !kilitliMi(p[0]) && (aramaNormali(p[1]).includes(q) || aramaNormali(p[0]).includes(q)))
+    .slice(0, 15);
+  sonuc.innerHTML = eslesenler.length === 0
+    ? `<div class="ayar-not">Sonuç bulunamadı.</div>`
+    : eslesenler.map(p => `<div class="ayar-satir">
+        <span>${escapeHtml(p[1])} <span style="color:#888;font-size:12px;">${escapeHtml(p[0])}</span></span>
+        <button class="ayar-btn tehlike" data-eylem="urunKilitle" data-kod="${escapeHtml(p[0])}">Kilitle</button>
+      </div>`).join('');
 }
 
 function urunEkle() {
@@ -1649,6 +2108,7 @@ document.querySelectorAll('nav.bottom button').forEach(btn => {
     currentTab = btn.dataset.tab;
     openDepotDetail = null;
     depotSearchQuery = '';
+    raporKontrolAcik = false;
     // Ekran burada zaten guncelleniyor: bekleyen render borcu KAPANIR.
     // Bayrak dusurulmezse, arama kutusunda yazarken gelen veri onu kurmusken
     // sekmeye tiklamak bayragi true birakiyor ve sonraki herhangi bir
@@ -1680,6 +2140,12 @@ document.addEventListener('click', olay => {
   else if (eylem === 'eskiKayitYukle') { eskiYuklemeHatasi = false; eskiKayitlariYukle(); renderHistoryBody(); }
   else if (eylem === 'depoSil') depoSil(hedef.dataset.depo);
   else if (eylem === 'depoSifirla') depoSifirla(hedef.dataset.depo);
+  else if (eylem === 'urunKilitle') urunKilitle(hedef.dataset.kod);
+  else if (eylem === 'urunKilidiAc') urunKilidiAc(hedef.dataset.kod);
+  else if (eylem === 'raporKontrolAc') { raporKontrolAcik = true; render(); }
+  else if (eylem === 'raporKontrolKapat') { raporKontrolAcik = false; render(); }
+  else if (eylem === 'raporGecmisTekrar') { raporGecmisHata = false; renderRaporKontrolGovde(); }
+  else if (eylem === 'raporIsle') raporFarklariniIsle();
   else if (eylem === 'urunSec') pickProduct(hedef.dataset.kod);
   else if (eylem === 'kullaniciCikis') kullaniciCikisYap();
   else if (eylem === 'kullaniciEkle') kullaniciEkle();
@@ -1705,6 +2171,8 @@ function loadCache() {
     const t = localStorage.getItem('cache_tx');
     const c = localStorage.getItem('cache_custom');
     const u = localStorage.getItem('cache_users');
+    const k = localStorage.getItem('cache_locked');
+    if (k) lockedProducts = JSON.parse(k) || {};
     if (d) depots = {...DEFAULT_DEPOTS, ...JSON.parse(d)};
     if (s) stock = JSON.parse(s);
     if (t) transactions = JSON.parse(t);
@@ -1734,6 +2202,7 @@ function saveCache() {
     localStorage.setItem('cache_tx', JSON.stringify(enYeniIslemler(300)));
     localStorage.setItem('cache_custom', JSON.stringify(customProducts));
     localStorage.setItem('cache_users', JSON.stringify(users));
+    localStorage.setItem('cache_locked', JSON.stringify(lockedProducts));
   } catch(e) {
     // Onbellek yazilamadi - ayni localStorage kotasini paylasan kuyruk da
     // yazamayacak demektir. Sessizce yutmak yerine zaten var olan "cihaz
@@ -2418,6 +2887,12 @@ db.ref('customProducts').on('value', snap => {
   scheduleRender();
 });
 
+db.ref('lockedProducts').on('value', snap => {
+  lockedProducts = snap.val() || {};
+  saveCache();
+  scheduleRender();
+});
+
 db.ref('users').on('value', snap => {
   users = snap.val() || {};
   usersSunucudanGeldi = true;
@@ -2535,6 +3010,7 @@ function openModal() {
 function quickTap(depotId, kod) {
   const p = prodMap()[kod];
   if (!p) return;
+  if (kilitliMi(kod)) { alert(KILITLI_MESAJ); return; }
   txType = 'giris';
   selectedProduct = p;
   quickDepotContext = depotId;
@@ -2633,11 +3109,14 @@ function searchProduct(q) {
     .filter(p => aramaNormali(p[1]).includes(q) || aramaNormali(p[0]).includes(q))
     .slice(0, 20);
   acList.innerHTML = eslesenler.map(p =>
-    `<div data-eylem="urunSec" data-kod="${escapeHtml(p[0])}">${escapeHtml(p[1])}<div class="ac-code">${escapeHtml(p[0])} · ${escapeHtml(p[2])}</div></div>`
+    `<div data-eylem="urunSec" data-kod="${escapeHtml(p[0])}"${kilitliMi(p[0]) ? ' style="opacity:.45"' : ''}>${kilitliMi(p[0]) ? '🔒 ' : ''}${escapeHtml(p[1])}<div class="ac-code">${escapeHtml(p[0])} · ${escapeHtml(p[2])}${kilitliMi(p[0]) ? ' · kilitli' : ''}</div></div>`
   ).join('');
 }
 
+const KILITLI_MESAJ = 'Bu ürün kilitli — burada kullanılmıyor.\n\nDoğru kalemi (ör. 100 CL / 70 CL) seçtiğinizden emin olun. Kilidi yalnızca yönetici Ayarlar\'dan açabilir.';
+
 function pickProduct(kod) {
+  if (kilitliMi(kod)) { alert(KILITLI_MESAJ); return; }
   const p = prodMap()[kod];
   selectedProduct = p;
   document.getElementById('acList').innerHTML = '';
@@ -2675,6 +3154,12 @@ function saveTransaction() {
 
   if (!selectedProduct) {
     errBox.textContent = 'Lütfen bir ürün seç.';
+    errBox.style.display = 'block';
+    return;
+  }
+  // Urun, secildikten SONRA baska bir cihazdan kilitlenmis olabilir.
+  if (kilitliMi(selectedProduct[0])) {
+    errBox.textContent = 'Bu ürün kilitli — burada kullanılmıyor. Doğru kalemi seçin.';
     errBox.style.display = 'block';
     return;
   }
